@@ -204,6 +204,11 @@ def _parse_args():
         default=None,
         help="Path to reference weather video for style injection.")
     parser.add_argument(
+        "--lambda_ref",
+        type=float,
+        default=0.5,
+        help="Reference injection strength, 0.0 to 1.0.")
+    parser.add_argument(
         "--sample_solver",
         type=str,
         default='unipc',
@@ -457,7 +462,9 @@ def generate(args):
             sampling_steps=args.sample_steps,
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
-            offload_model=args.offload_model)
+            offload_model=args.offload_model,
+            ref_video_path=args.ref_video,
+            lambda_ref=args.lambda_ref)
     elif "animate" in args.task:
         logging.info("Creating Wan-Animate pipeline.")
         wan_animate = wan.WanAnimate(

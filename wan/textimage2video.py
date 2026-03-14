@@ -171,7 +171,9 @@ class WanTI2V:
                  guide_scale=5.0,
                  n_prompt="",
                  seed=-1,
-                 offload_model=True):
+                 offload_model=True,
+                 ref_video_path=None,
+                 lambda_ref=0.5):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -234,7 +236,9 @@ class WanTI2V:
             guide_scale=guide_scale,
             n_prompt=n_prompt,
             seed=seed,
-            offload_model=offload_model)
+            offload_model=offload_model,
+            ref_video_path=ref_video_path,
+            lambda_ref=lambda_ref)
 
     def t2v(self,
             input_prompt,
@@ -246,7 +250,9 @@ class WanTI2V:
             guide_scale=5.0,
             n_prompt="",
             seed=-1,
-            offload_model=True):
+            offload_model=True,
+            ref_video_path=None,
+            lambda_ref=0.5):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -308,6 +314,22 @@ class WanTI2V:
             context = [t.to(self.device) for t in context]
             context_null = [t.to(self.device) for t in context_null]
 
+        # reference video encoding (optional, once before denoising loop)
+        ref_tokens = None
+        ref_lens = None
+        if ref_video_path is not None:
+            from wan.ref_video_encoder import RefVideoEncoder
+            try:
+                target_dim = self.model.dim
+            except AttributeError:
+                target_dim = 3072
+            ref_encoder = RefVideoEncoder(vae=self.vae, target_dim=target_dim)
+            ref_tokens, ref_lens = ref_encoder.encode(ref_video_path)
+            if lambda_ref is not None:
+                ref_tokens = ref_tokens * float(lambda_ref)
+            ref_tokens = ref_tokens.to(device=self.device, dtype=self.param_dtype)
+            ref_lens = ref_lens.to(device=self.device)
+
         noise = [
             torch.randn(
                 target_shape[0],
@@ -357,8 +379,18 @@ class WanTI2V:
             latents = noise
             mask1, mask2 = masks_like(noise, zero=False)
 
-            arg_c = {'context': context, 'seq_len': seq_len}
-            arg_null = {'context': context_null, 'seq_len': seq_len}
+            arg_c = {
+                'context': context,
+                'seq_len': seq_len,
+                'ref_context': ref_tokens,
+                'ref_context_lens': ref_lens,
+            }
+            arg_null = {
+                'context': context_null,
+                'seq_len': seq_len,
+                'ref_context': ref_tokens,
+                'ref_context_lens': ref_lens,
+            }
 
             if offload_model or self.init_on_cpu:
                 self.model.to(self.device)
