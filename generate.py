@@ -199,6 +199,11 @@ def _parse_args():
         default=None,
         help="The image to generate the video from.")
     parser.add_argument(
+        "--ref_video",
+        type=str,
+        default=None,
+        help="Path to reference weather video for style injection.")
+    parser.add_argument(
         "--sample_solver",
         type=str,
         default='unipc',
@@ -424,7 +429,8 @@ def generate(args):
             sampling_steps=args.sample_steps,
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
-            offload_model=args.offload_model)
+            offload_model=args.offload_model,
+            ref_video_path=args.ref_video)
     elif "ti2v" in args.task:
         logging.info("Creating WanTI2V pipeline.")
         wan_ti2v = wan.WanTI2V(

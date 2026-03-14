@@ -157,7 +157,12 @@ class WanSelfAttention(nn.Module):
 
 class WanCrossAttention(WanSelfAttention):
 
-    def forward(self, x, context, context_lens):
+    def forward(self,
+                x,
+                context,
+                context_lens,
+                ref_context=None,
+                ref_context_lens=None):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -168,11 +173,21 @@ class WanCrossAttention(WanSelfAttention):
 
         # compute query, key, value
         q = self.norm_q(self.q(x)).view(b, -1, n, d)
-        k = self.norm_k(self.k(context)).view(b, -1, n, d)
-        v = self.v(context).view(b, -1, n, d)
+
+        if ref_context is not None:
+            combined = torch.cat([context, ref_context], dim=1)
+            combined_lens = None
+            if context_lens is not None and ref_context_lens is not None:
+                combined_lens = context_lens + ref_context_lens
+        else:
+            combined = context
+            combined_lens = context_lens
+
+        k = self.norm_k(self.k(combined)).view(b, -1, n, d)
+        v = self.v(combined).view(b, -1, n, d)
 
         # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        x = flash_attention(q, k, v, k_lens=combined_lens)
 
         # output
         x = x.flatten(2)
@@ -225,6 +240,8 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
+        ref_context=None,
+        ref_context_lens=None,
     ):
         r"""
         Args:
@@ -247,15 +264,28 @@ class WanAttentionBlock(nn.Module):
             x = x + y * e[2].squeeze(2)
 
         # cross-attention & ffn function
-        def cross_attn_ffn(x, context, context_lens, e):
-            x = x + self.cross_attn(self.norm3(x), context, context_lens)
+        def cross_attn_ffn(x, context, context_lens, e, ref_context=None, ref_context_lens=None):
+            x = x + self.cross_attn(
+                self.norm3(x),
+                context,
+                context_lens,
+                ref_context=ref_context,
+                ref_context_lens=ref_context_lens,
+            )
             y = self.ffn(
                 self.norm2(x).float() * (1 + e[4].squeeze(2)) + e[3].squeeze(2))
             with torch.amp.autocast('cuda', dtype=torch.float32):
                 x = x + y * e[5].squeeze(2)
             return x
 
-        x = cross_attn_ffn(x, context, context_lens, e)
+        x = cross_attn_ffn(
+            x,
+            context,
+            context_lens,
+            e,
+            ref_context=ref_context,
+            ref_context_lens=ref_context_lens,
+        )
         return x
 
 
@@ -414,6 +444,8 @@ class WanModel(ModelMixin, ConfigMixin):
         context,
         seq_len,
         y=None,
+        ref_context=None,
+        ref_context_lens=None,
     ):
         r"""
         Forward pass through the diffusion model
@@ -469,13 +501,18 @@ class WanModel(ModelMixin, ConfigMixin):
             assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
         # context
-        context_lens = None
         context = self.text_embedding(
             torch.stack([
                 torch.cat(
                     [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
                 for u in context
             ]))
+        context_lens = torch.full(
+            (context.size(0),),
+            self.text_len,
+            dtype=torch.long,
+            device=context.device,
+        )
 
         # arguments
         kwargs = dict(
@@ -484,7 +521,10 @@ class WanModel(ModelMixin, ConfigMixin):
             grid_sizes=grid_sizes,
             freqs=self.freqs,
             context=context,
-            context_lens=context_lens)
+            context_lens=context_lens,
+            ref_context=ref_context,
+            ref_context_lens=ref_context_lens,
+        )
 
         for block in self.blocks:
             x = block(x, **kwargs)

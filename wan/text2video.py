@@ -210,7 +210,8 @@ class WanT2V:
                  guide_scale=5.0,
                  n_prompt="",
                  seed=-1,
-                 offload_model=True):
+                 offload_model=True,
+                 ref_video_path=None):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -305,6 +306,21 @@ class WanT2V:
         ):
             boundary = self.boundary * self.num_train_timesteps
 
+            # reference video encoding (optional, once before denoising loop)
+            ref_tokens = None
+            ref_lens = None
+            if ref_video_path is not None:
+                from .ref_video_encoder import RefVideoEncoder
+
+                # use the DiT hidden dim as target context dimension
+                target_dim = getattr(self.low_noise_model, "dim",
+                                     context[0].size(1))
+                ref_encoder = RefVideoEncoder(vae=self.vae, target_dim=target_dim)
+                ref_tokens, ref_lens = ref_encoder.encode(ref_video_path)
+                ref_tokens = ref_tokens.to(device=self.device,
+                                           dtype=self.param_dtype)
+                ref_lens = ref_lens.to(device=self.device)
+
             if sample_solver == 'unipc':
                 sample_scheduler = FlowUniPCMultistepScheduler(
                     num_train_timesteps=self.num_train_timesteps,
@@ -329,8 +345,18 @@ class WanT2V:
             # sample videos
             latents = noise
 
-            arg_c = {'context': context, 'seq_len': seq_len}
-            arg_null = {'context': context_null, 'seq_len': seq_len}
+            arg_c = {
+                'context': context,
+                'seq_len': seq_len,
+                'ref_context': ref_tokens,
+                'ref_context_lens': ref_lens,
+            }
+            arg_null = {
+                'context': context_null,
+                'seq_len': seq_len,
+                'ref_context': ref_tokens,
+                'ref_context_lens': ref_lens,
+            }
 
             for _, t in enumerate(tqdm(timesteps)):
                 latent_model_input = latents
