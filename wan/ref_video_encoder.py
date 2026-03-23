@@ -4,27 +4,19 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# from torchvision.io import read_video
 from torchvision.transforms import functional as TF
 
 
 class RefVideoEncoder:
 
     def __init__(self, vae, target_dim: int):
-        r"""
-        Utility to encode a reference video into a compact token sequence that
-        can be injected into Wan cross-attention as additional context.
-
-        Args:
-            vae: Loaded Wan VAE wrapper (e.g., Wan2_1_VAE instance).
-            target_dim: Target embedding dimension to match the model's context dim.
-        """
         self.vae = vae
 
-        # infer latent channel dimension from underlying VAE model
         vae_latent_channels = getattr(getattr(vae, "model", None), "z_dim", None)
         if vae_latent_channels is None:
-            raise ValueError("Unable to infer VAE latent channels (expected `vae.model.z_dim`).")
+            raise ValueError(
+                "Unable to infer VAE latent channels (expected `vae.model.z_dim`)."
+            )
 
         self.proj = nn.Linear(vae_latent_channels, target_dim)
         nn.init.xavier_uniform_(self.proj.weight)
@@ -42,77 +34,63 @@ class RefVideoEncoder:
             indices = indices.round().long().clamp(0, total_frames - 1)
         else:
             indices = torch.arange(num_frames) % total_frames
-        frames = vr.get_batch(indices.tolist())  # [N, H, W, C]
-        frames = frames.permute(0, 3, 1, 2).float() / 255.0  # [N, C, H, W]
+        frames = vr.get_batch(indices.tolist())   # [N, H, W, C], uint8
+        frames = frames.permute(0, 3, 1, 2).float() / 255.0  # [N, C, H, W], [0, 1]
         return frames
 
     @torch.no_grad()
     def encode(self, video_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
-        r"""
-        Encode a reference video into a compact sequence of tokens suitable for
-        cross-attention context injection.
+        device = getattr(
+            self.vae, "device",
+            torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
 
-        Steps:
-            1. Load the video and uniformly sample 8 frames.
-            2. Resize each frame to 64x64.
-            3. Normalize pixel values to [-1, 1].
-            4. Encode frames through the frozen VAE encoder.
-            5. Apply spatial average pooling to 8x8.
-            6. Flatten across frames and spatial dimensions to obtain 512 tokens.
-            7. Project tokens to the model's context dimension.
+        # 1. Load and sample frames → [8, C, H, W] in [0, 1]
+        frames = self._load_and_sample_frames(video_path, num_frames=33)
 
-        Returns:
-            ref_tokens: Tensor of shape [1, 512, target_dim]
-            ref_lens:   LongTensor of shape [1] with value 512
-        """
-        device = getattr(self.vae, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        # 2. Resize to 64×64
+        frames = TF.resize(frames, [64, 64])             # [8, C, 64, 64]
 
-        # 1. Load and sample frames
-        frames = self._load_and_sample_frames(video_path, num_frames=8)  # [8, 3, H, W]
+        # 3. Normalize to [-1, 1]  — only once, frames are already in [0, 1]
+        frames = frames * 2.0 - 1.0                      # [8, C, 64, 64]
+        frames = frames.to(device=device, dtype=torch.float32)
 
-        # 2. Resize to 64x64
-        frames = TF.resize(frames, [64, 64])  # [8, 3, 64, 64]
+        # 4. Pass ALL frames as a single clip through the 3D VAE
+        #    Wan VAE expects input as a list of videos, each [C, T, H, W]
+        video_clip = frames.permute(1, 0, 2, 3)          # [C, T=8, H, W]
+        latents = self.vae.encode([video_clip])           # list of 1 latent
+        latent = latents[0]                               # [C_latent, T_latent, H_latent, W_latent]
+        #    With temporal stride 4: T_latent = ceil((8-1)/4)+1 = 3 (Wan formula)
+        #    Spatial stride 8:       H_latent = 64/8 = 8, W_latent = 8
 
-        # 3. Normalize to [-1, 1]
-        frames = frames.to(device=device, dtype=torch.float32) / 255.0
-        frames = frames * 2.0 - 1.0
+        # 5. Spatial average pool to 8×8 (in case spatial dim differs)
+        C_lat, T_lat, H_lat, W_lat = latent.shape
+        latent_2d = latent.reshape(C_lat * T_lat, H_lat, W_lat).unsqueeze(0)
+        latent_2d = F.adaptive_avg_pool2d(latent_2d, (8, 8))  # [1, C*T, 8, 8]
+        latent_2d = latent_2d.squeeze(0)                       # [C*T, 8, 8]
 
-        # 4. Encode through frozen VAE encoder
-        # Treat each frame as a separate 1-frame video: [C, T, H, W] with T=1
-        videos = [frame.unsqueeze(1) for frame in frames]  # list of [3, 1, 64, 64]
-        latents_list = self.vae.encode(videos)
-
-        # Each element in latents_list has shape [C_latent, T_latent, H_latent, W_latent]
-        # We collapse the temporal dimension by averaging, yielding [C_latent, H_latent, W_latent]
-        processed = []
-        for latent in latents_list:
-            if latent.dim() != 4:
-                raise ValueError(
-                    f"Expected VAE latents with 4 dimensions [C_latent, T, H, W], got shape {tuple(latent.shape)}"
-                )
-            if latent.size(1) > 1:
-                latent = latent.mean(dim=1)
-            else:
-                latent = latent.squeeze(1)
-            processed.append(latent)
-
-        latents = torch.stack(processed, dim=0)  # [8, C_latent, H_latent, W_latent]
-
-        # 5. Spatial average pooling to 8x8
-        latents = F.adaptive_avg_pool2d(latents, (8, 8))  # [8, C_latent, 8, 8]
-
-        # 6. Reshape to token sequence
-        latents = latents.permute(0, 2, 3, 1).contiguous()  # [8, 8, 8, C_latent]
-        b, f, h, c_latent = latents.shape[0], latents.shape[1], latents.shape[2], latents.shape[3]
-        assert b * f * h == 8 * 8 * 8, "Unexpected latent shape while creating reference tokens."
-        latents = latents.view(1, 8 * 8 * 8, c_latent)  # [1, 512, C_latent]
+        # 6. Flatten to token sequence
+        #    tokens = T_lat * 8 * 8  (dynamic, not hardcoded to 512)
+        latent_2d = latent_2d.permute(1, 2, 0)                # [8, 8, C*T]
+        num_tokens = 8 * 8
+        c_combined = C_lat * T_lat
+        tokens_flat = latent_2d.reshape(1, num_tokens, c_combined)  # [1, 64, C*T]
 
         # 7. Project to model context dim
-        self.proj.to(device=latents.device)
-        tokens = self.proj(latents)  # [1, 512, target_dim]
+        #    projection input dim may now be C_lat * T_lat instead of C_lat
+        #    handle this by re-creating proj if needed
+        if tokens_flat.shape[-1] != self.proj.in_features:
+            self.proj = nn.Linear(tokens_flat.shape[-1], self.proj.out_features)
+            nn.init.xavier_uniform_(self.proj.weight)
+            nn.init.zeros_(self.proj.bias)
+            self.proj.eval()
 
-        # 8. Sequence lengths tensor
-        ref_lens = torch.tensor([tokens.size(1)], dtype=torch.long, device=tokens.device)
+        self.proj = self.proj.to(device=device, dtype=tokens_flat.dtype)
+        tokens = self.proj(tokens_flat)                        # [1, 64, target_dim]
+
+        # 8. Sequence length
+        ref_lens = torch.tensor(
+            [tokens.size(1)], dtype=torch.long, device=tokens.device
+        )
 
         return tokens, ref_lens
-
