@@ -4,7 +4,7 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.io import read_video
+# from torchvision.io import read_video
 from torchvision.transforms import functional as TF
 
 
@@ -32,32 +32,19 @@ class RefVideoEncoder:
             nn.init.zeros_(self.proj.bias)
         self.proj.eval()
 
-    def _load_and_sample_frames(self, video_path: str, num_frames: int = 8) -> torch.Tensor:
-        r"""
-        Load a video file and uniformly sample exactly `num_frames` frames.
-
-        Returns:
-            Tensor of shape [num_frames, 3, H, W] in uint8.
-        """
-        video, _, _ = read_video(video_path, pts_unit="sec")
-        # video: [T, H, W, C] in uint8
-        if video.numel() == 0:
-            raise ValueError(f"Failed to load video from path: {video_path}")
-
-        total_frames = video.shape[0]
-        if total_frames >= num_frames:
-            indices = torch.linspace(0, total_frames - 1, steps=num_frames)
-            indices = indices.round().long().clamp(0, total_frames - 1)
-        else:
-            # If there are fewer than num_frames, repeat frames to reach num_frames
-            reps = math.ceil(num_frames / total_frames)
-            tiled = video.repeat(reps, 1, 1, 1)
-            indices = torch.arange(num_frames)
-            video = tiled
-
-        sampled = video[indices]  # [num_frames, H, W, C]
-        sampled = sampled.permute(0, 3, 1, 2).contiguous()  # [num_frames, 3, H, W]
-        return sampled
+    def _load_and_sample_frames(self, video_path: str, num_frames: int = 8):
+    import decord
+    decord.bridge.set_bridge('torch')
+    vr = decord.VideoReader(video_path, ctx=decord.cpu(0))
+    total_frames = len(vr)
+    if total_frames >= num_frames:
+        indices = torch.linspace(0, total_frames - 1, steps=num_frames)
+        indices = indices.round().long().clamp(0, total_frames - 1)
+    else:
+        indices = torch.arange(num_frames) % total_frames
+    frames = vr.get_batch(indices.tolist())  # [N, H, W, C]
+    frames = frames.permute(0, 3, 1, 2).float() / 255.0  # [N, C, H, W]
+    return frames
 
     @torch.no_grad()
     def encode(self, video_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
