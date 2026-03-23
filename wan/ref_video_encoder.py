@@ -33,18 +33,18 @@ class RefVideoEncoder:
         self.proj.eval()
 
     def _load_and_sample_frames(self, video_path: str, num_frames: int = 8):
-    import decord
-    decord.bridge.set_bridge('torch')
-    vr = decord.VideoReader(video_path, ctx=decord.cpu(0))
-    total_frames = len(vr)
-    if total_frames >= num_frames:
-        indices = torch.linspace(0, total_frames - 1, steps=num_frames)
-        indices = indices.round().long().clamp(0, total_frames - 1)
-    else:
-        indices = torch.arange(num_frames) % total_frames
-    frames = vr.get_batch(indices.tolist())  # [N, H, W, C]
-    frames = frames.permute(0, 3, 1, 2).float() / 255.0  # [N, C, H, W]
-    return frames
+        import decord
+        decord.bridge.set_bridge('torch')
+        vr = decord.VideoReader(video_path, ctx=decord.cpu(0))
+        total_frames = len(vr)
+        if total_frames >= num_frames:
+            indices = torch.linspace(0, total_frames - 1, steps=num_frames)
+            indices = indices.round().long().clamp(0, total_frames - 1)
+        else:
+            indices = torch.arange(num_frames) % total_frames
+        frames = vr.get_batch(indices.tolist())  # [N, H, W, C]
+        frames = frames.permute(0, 3, 1, 2).float() / 255.0  # [N, C, H, W]
+        return frames
 
     @torch.no_grad()
     def encode(self, video_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
