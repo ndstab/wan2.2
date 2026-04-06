@@ -173,7 +173,9 @@ class WanTI2V:
                  seed=-1,
                  offload_model=True,
                  ref_video_path=None,
-                 lambda_ref=0.5):
+                 lambda_ref=0.5,
+                 t_guide=5.0,
+                 c_guide=4.0):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -238,7 +240,9 @@ class WanTI2V:
             seed=seed,
             offload_model=offload_model,
             ref_video_path=ref_video_path,
-            lambda_ref=lambda_ref)
+            lambda_ref=lambda_ref,
+            t_guide=t_guide,
+            c_guide=c_guide)
 
     def t2v(self,
             input_prompt,
@@ -252,7 +256,9 @@ class WanTI2V:
             seed=-1,
             offload_model=True,
             ref_video_path=None,
-            lambda_ref=0.5):
+            lambda_ref=0.5,
+            t_guide=5.0,
+            c_guide=4.0):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -306,13 +312,16 @@ class WanTI2V:
             self.text_encoder.model.to(self.device)
             context = self.text_encoder([input_prompt], self.device)
             context_null = self.text_encoder([n_prompt], self.device)
+            context_empty = self.text_encoder([""], self.device)
             if offload_model:
                 self.text_encoder.model.cpu()
         else:
             context = self.text_encoder([input_prompt], torch.device('cpu'))
             context_null = self.text_encoder([n_prompt], torch.device('cpu'))
+            context_empty = self.text_encoder([""], torch.device('cpu'))
             context = [t.to(self.device) for t in context]
             context_null = [t.to(self.device) for t in context_null]
+            context_empty = [t.to(self.device) for t in context_empty]
 
         # reference video encoding (optional, once before denoising loop)
         ref_tokens = None
@@ -329,6 +338,23 @@ class WanTI2V:
                 ref_tokens = ref_tokens * float(lambda_ref)
             ref_tokens = ref_tokens.to(device=self.device, dtype=self.param_dtype)
             ref_lens = ref_lens.to(device=self.device)
+
+        ref_tokens_perm = None
+        if ref_tokens is not None and ref_tokens.dim() == 3:
+            _b, Lref, _d = ref_tokens.shape
+            perm_gen = torch.Generator()
+            perm_gen.manual_seed(int(seed))
+            dev = ref_tokens.device
+            if Lref == 8:
+                r = ref_tokens.view(1, 2, 2, 2, -1)
+                pt = torch.randperm(2, generator=perm_gen).to(dev)
+                ph = torch.randperm(2, generator=perm_gen).to(dev)
+                pw = torch.randperm(2, generator=perm_gen).to(dev)
+                r = r[:, pt, :, :, :][:, :, ph, :, :][:, :, :, pw, :]
+                ref_tokens_perm = r.reshape_as(ref_tokens)
+            else:
+                p = torch.randperm(Lref, generator=perm_gen).to(dev)
+                ref_tokens_perm = ref_tokens[:, p, :]
 
         noise = [
             torch.randn(
@@ -391,6 +417,22 @@ class WanTI2V:
                 'ref_context': ref_tokens,
                 'ref_context_lens': ref_lens,
             }
+            use_cs_cfg = (
+                ref_video_path is not None and ref_tokens is not None
+                and ref_tokens_perm is not None)
+            if use_cs_cfg:
+                arg_content = {
+                    'context': context_empty,
+                    'seq_len': seq_len,
+                    'ref_context': ref_tokens,
+                    'ref_context_lens': ref_lens,
+                }
+                arg_ctx_perm = {
+                    'context': context_empty,
+                    'seq_len': seq_len,
+                    'ref_context': ref_tokens_perm,
+                    'ref_context_lens': ref_lens,
+                }
 
             if offload_model or self.init_on_cpu:
                 self.model.to(self.device)
@@ -409,13 +451,24 @@ class WanTI2V:
                 ])
                 timestep = temp_ts.unsqueeze(0)
 
-                noise_pred_cond = self.model(
-                    latent_model_input, t=timestep, **arg_c)[0]
-                noise_pred_uncond = self.model(
-                    latent_model_input, t=timestep, **arg_null)[0]
-
-                noise_pred = noise_pred_uncond + guide_scale * (
-                    noise_pred_cond - noise_pred_uncond)
+                if use_cs_cfg:
+                    eps_cond = self.model(
+                        latent_model_input, t=timestep, **arg_c)[0]
+                    eps_null_text = self.model(
+                        latent_model_input, t=timestep, **arg_content)[0]
+                    eps_null = self.model(
+                        latent_model_input, t=timestep, **arg_ctx_perm)[0]
+                    noise_pred = (
+                        eps_null_text
+                        + t_guide * (eps_cond - eps_null_text)
+                        + c_guide * (eps_null_text - eps_null))
+                else:
+                    noise_pred_cond = self.model(
+                        latent_model_input, t=timestep, **arg_c)[0]
+                    noise_pred_uncond = self.model(
+                        latent_model_input, t=timestep, **arg_null)[0]
+                    noise_pred = noise_pred_uncond + guide_scale * (
+                        noise_pred_cond - noise_pred_uncond)
 
                 temp_x0 = sample_scheduler.step(
                     noise_pred.unsqueeze(0),

@@ -209,6 +209,16 @@ def _parse_args():
         default=0.5,
         help="Reference injection strength, 0.0 to 1.0.")
     parser.add_argument(
+        "--t_guide",
+        type=float,
+        default=5.0,
+        help="CS-CFG text/style guidance (ti2v with --ref_video only).")
+    parser.add_argument(
+        "--c_guide",
+        type=float,
+        default=4.0,
+        help="CS-CFG content/context guidance (ti2v with --ref_video only).")
+    parser.add_argument(
         "--sample_solver",
         type=str,
         default='unipc',
@@ -464,7 +474,9 @@ def generate(args):
             seed=args.base_seed,
             offload_model=args.offload_model,
             ref_video_path=args.ref_video,
-            lambda_ref=args.lambda_ref)
+            lambda_ref=args.lambda_ref,
+            t_guide=args.t_guide,
+            c_guide=args.c_guide)
     elif "animate" in args.task:
         logging.info("Creating Wan-Animate pipeline.")
         wan_animate = wan.WanAnimate(
