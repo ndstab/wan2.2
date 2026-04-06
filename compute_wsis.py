@@ -14,7 +14,7 @@ def load_video_frames(path, n=16):
 
 ref     = load_video_frames("ref_videos/sandstorm.mp4").to(device)
 base    = load_video_frames("outputs/baseline_no_ref.mp4").to(device)
-injected = load_video_frames("outputs/sandstorm_injected_lambda05.mp4").to(device)
+injected = load_video_frames("outputs/sandstorm_with_clip.mp4").to(device)
 
 print(f"Baseline WSIS:  {scorer.compute(base, ref):.4f}")
 print(f"Injected WSIS:  {scorer.compute(injected, ref):.4f}")

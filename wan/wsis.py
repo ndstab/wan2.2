@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import clip
 
-class WeatheStyleInjectionScore:
+class WeatherStyleInjectionScore:
     def __init__(self, device):
         self.model, self.preprocess = clip.load("ViT-L/14", device=device)
         self.model.eval()

@@ -45,7 +45,13 @@ class RefVideoEncoder:
         frames = (frames - clip_mean) / clip_std
         frames = frames.to(device=device, dtype=torch.float32)
 
-        clip_model, _ = clip.load("ViT-L/14", device=device)
+        # clip_model, _ = clip.load("ViT-L/14", device=device)
+        import os
+        clip_model, _ = clip.load(  
+        "ViT-L/14", 
+        device=device,
+        download_root=os.path.expanduser("~/.cache/clip")
+        )
         clip_model.eval()
 
         frame_features = clip_model.encode_image(frames)
