@@ -68,8 +68,9 @@ def sp_dit_forward(
     context,
     seq_len,
     y=None,
-    ref_context=None,
-    ref_context_lens=None,
+    ref_latents=None,
+    lambda_ref=0.0,
+    inject_blocks=None,
 ):
     """
     x:              A list of videos each with shape [C, T, H, W].
@@ -123,10 +124,27 @@ def sp_dit_forward(
         device=context.device,
     )
 
+    # ref latents: embed & pad identically to x, then chunk along the same seq dim
+    ref_hidden_states = None
+    if ref_latents is not None and lambda_ref > 0.0:
+        ref = [self.patch_embedding(u.unsqueeze(0)) for u in ref_latents]
+        ref = [u.flatten(2).transpose(1, 2) for u in ref]
+        ref_hidden_states = torch.cat([
+            torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))], dim=1)
+            for u in ref
+        ])
+
     # Context Parallel
     x = torch.chunk(x, get_world_size(), dim=1)[get_rank()]
     e = torch.chunk(e, get_world_size(), dim=1)[get_rank()]
     e0 = torch.chunk(e0, get_world_size(), dim=1)[get_rank()]
+    if ref_hidden_states is not None:
+        ref_hidden_states = torch.chunk(
+            ref_hidden_states, get_world_size(), dim=1)[get_rank()]
+
+    if inject_blocks is None:
+        inject_blocks = list(range(len(self.blocks)))
+    inject_set = set(int(i) for i in inject_blocks)
 
     # arguments
     kwargs = dict(
@@ -136,12 +154,14 @@ def sp_dit_forward(
         freqs=self.freqs,
         context=context,
         context_lens=context_lens,
-        ref_context=ref_context,
-        ref_context_lens=ref_context_lens,
     )
 
-    for block in self.blocks:
-        x = block(x, **kwargs)
+    for idx, block in enumerate(self.blocks):
+        if ref_hidden_states is not None and idx in inject_set:
+            x = block(x, ref_hidden_states=ref_hidden_states,
+                      lambda_ref=lambda_ref, **kwargs)
+        else:
+            x = block(x, **kwargs)
 
     # head
     x = self.head(x, e)
@@ -154,7 +174,9 @@ def sp_dit_forward(
     return [u.float() for u in x]
 
 
-def sp_attn_forward(self, x, seq_lens, grid_sizes, freqs, dtype=torch.bfloat16):
+def sp_attn_forward(self, x, seq_lens, grid_sizes, freqs,
+                    ref_hidden_states=None, lambda_ref=0.0,
+                    dtype=torch.bfloat16):
     b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
     half_dtypes = (torch.float16, torch.bfloat16)
 
@@ -169,6 +191,13 @@ def sp_attn_forward(self, x, seq_lens, grid_sizes, freqs, dtype=torch.bfloat16):
         return q, k, v
 
     q, k, v = qkv_fn(x)
+
+    if ref_hidden_states is not None and lambda_ref > 0.0:
+        k_ref = self.norm_k(self.k(ref_hidden_states)).view(b, s, n, d)
+        v_ref = self.v(ref_hidden_states).view(b, s, n, d)
+        k = (1.0 - lambda_ref) * k + lambda_ref * k_ref
+        v = (1.0 - lambda_ref) * v + lambda_ref * v_ref
+
     q = rope_apply(q, grid_sizes, freqs)
     k = rope_apply(k, grid_sizes, freqs)
 

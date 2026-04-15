@@ -209,6 +209,12 @@ def _parse_args():
         default=0.5,
         help="Reference injection strength, 0.0 to 1.0.")
     parser.add_argument(
+        "--inject_blocks",
+        type=str,
+        default=None,
+        help="Comma-separated block indices to inject into (e.g. '20,21,22'). "
+             "Default: all blocks.")
+    parser.add_argument(
         "--sample_solver",
         type=str,
         default='unipc',
@@ -464,7 +470,10 @@ def generate(args):
             seed=args.base_seed,
             offload_model=args.offload_model,
             ref_video_path=args.ref_video,
-            lambda_ref=args.lambda_ref)
+            lambda_ref=args.lambda_ref,
+            inject_blocks=(
+                [int(i) for i in args.inject_blocks.split(',')]
+                if args.inject_blocks else None))
     elif "animate" in args.task:
         logging.info("Creating Wan-Animate pipeline.")
         wan_animate = wan.WanAnimate(

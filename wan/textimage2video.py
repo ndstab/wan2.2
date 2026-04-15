@@ -173,7 +173,8 @@ class WanTI2V:
                  seed=-1,
                  offload_model=True,
                  ref_video_path=None,
-                 lambda_ref=0.5):
+                 lambda_ref=0.5,
+                 inject_blocks=None):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -238,7 +239,8 @@ class WanTI2V:
             seed=seed,
             offload_model=offload_model,
             ref_video_path=ref_video_path,
-            lambda_ref=lambda_ref)
+            lambda_ref=lambda_ref,
+            inject_blocks=inject_blocks)
 
     def t2v(self,
             input_prompt,
@@ -252,7 +254,8 @@ class WanTI2V:
             seed=-1,
             offload_model=True,
             ref_video_path=None,
-            lambda_ref=0.5):
+            lambda_ref=0.5,
+            inject_blocks=None):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -314,21 +317,27 @@ class WanTI2V:
             context = [t.to(self.device) for t in context]
             context_null = [t.to(self.device) for t in context_null]
 
-        # reference video encoding (optional, once before denoising loop)
-        ref_tokens = None
-        ref_lens = None
+        # Reference video: encode with the 3D VAE to match the content latent space.
+        # Frames are uniformly sampled and resized to the *same* pixel (H, W, F) as the
+        # content video so the latent grid (and thus RoPE) matches exactly.
+        ref_latent_clean = None
         if ref_video_path is not None:
-            from wan.ref_video_encoder import RefVideoEncoder
-            try:
-                target_dim = self.model.dim
-            except AttributeError:
-                target_dim = 3072
-            ref_encoder = RefVideoEncoder(vae=self.vae, target_dim=target_dim)
-            ref_tokens, ref_lens = ref_encoder.encode(ref_video_path)
-            if lambda_ref is not None:
-                ref_tokens = ref_tokens * float(lambda_ref)
-            ref_tokens = ref_tokens.to(device=self.device, dtype=self.param_dtype)
-            ref_lens = ref_lens.to(device=self.device)
+            import decord
+            decord.bridge.set_bridge('torch')
+            vr = decord.VideoReader(ref_video_path, ctx=decord.cpu(0))
+            total = len(vr)
+            idx = torch.linspace(0, total - 1, steps=F).round().long().clamp(0, total - 1)
+            frames = vr.get_batch(idx.tolist())  # [F, H, W, C] uint8
+            frames = frames.permute(3, 0, 1, 2).float() / 255.0  # [C, F, H, W]
+            frames = frames * 2.0 - 1.0  # same [-1, 1] normalization as i2v path
+            # Resize each frame to target (size[1], size[0]) == (H, W).
+            frames = torch.nn.functional.interpolate(
+                frames.permute(1, 0, 2, 3),  # [F, C, H, W]
+                size=(size[1], size[0]), mode='bilinear', align_corners=False,
+            ).permute(1, 0, 2, 3).contiguous()  # back to [C, F, H, W]
+            frames = frames.to(device=self.device, dtype=torch.float32)
+            ref_latent_clean = self.vae.encode([frames])[0]  # [C, T, Hl, Wl]
+            ref_latent_clean = ref_latent_clean.to(dtype=torch.float32)
 
         noise = [
             torch.randn(
@@ -382,14 +391,10 @@ class WanTI2V:
             arg_c = {
                 'context': context,
                 'seq_len': seq_len,
-                'ref_context': ref_tokens,
-                'ref_context_lens': ref_lens,
             }
             arg_null = {
                 'context': context_null,
                 'seq_len': seq_len,
-                'ref_context': ref_tokens,
-                'ref_context_lens': ref_lens,
             }
 
             if offload_model or self.init_on_cpu:
@@ -409,10 +414,28 @@ class WanTI2V:
                 ])
                 timestep = temp_ts.unsqueeze(0)
 
+                # Noise ref latents to the current timestep via flow-matching interp:
+                # x_t = (t/T) * noise + (1 - t/T) * x_0. This keeps K_ref / V_ref in
+                # roughly the same noise distribution the model's K/V projections expect.
+                ref_kwargs = {}
+                if ref_latent_clean is not None:
+                    sigma = float(t) / float(self.num_train_timesteps)
+                    ref_noise = torch.randn(
+                        ref_latent_clean.shape,
+                        dtype=ref_latent_clean.dtype,
+                        device=ref_latent_clean.device,
+                        generator=seed_g)
+                    ref_noised = (1.0 - sigma) * ref_latent_clean + sigma * ref_noise
+                    ref_kwargs = {
+                        'ref_latents': [ref_noised.to(dtype=self.param_dtype)],
+                        'lambda_ref': float(lambda_ref),
+                        'inject_blocks': inject_blocks,
+                    }
+
                 noise_pred_cond = self.model(
-                    latent_model_input, t=timestep, **arg_c)[0]
+                    latent_model_input, t=timestep, **arg_c, **ref_kwargs)[0]
                 noise_pred_uncond = self.model(
-                    latent_model_input, t=timestep, **arg_null)[0]
+                    latent_model_input, t=timestep, **arg_null, **ref_kwargs)[0]
 
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)

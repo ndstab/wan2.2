@@ -123,13 +123,17 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, seq_lens, grid_sizes, freqs):
+    def forward(self, x, seq_lens, grid_sizes, freqs,
+                ref_hidden_states=None, lambda_ref=0.0):
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
             seq_lens(Tensor): Shape [B]
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
+            ref_hidden_states(Tensor, optional): Same shape as x — reference video tokens
+                used to produce K_ref / V_ref for StyleID-style injection.
+            lambda_ref(float): Convex mixing coefficient for K/V: 0 = content only, 1 = ref only.
         """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
 
@@ -141,6 +145,14 @@ class WanSelfAttention(nn.Module):
             return q, k, v
 
         q, k, v = qkv_fn(x)
+
+        if ref_hidden_states is not None and lambda_ref > 0.0:
+            # Reuse existing K/V projections on ref tokens — these projections are
+            # already trained on video latents and ref is in the same space.
+            k_ref = self.norm_k(self.k(ref_hidden_states)).view(b, s, n, d)
+            v_ref = self.v(ref_hidden_states).view(b, s, n, d)
+            k = (1.0 - lambda_ref) * k + lambda_ref * k_ref
+            v = (1.0 - lambda_ref) * v + lambda_ref * v_ref
 
         x = flash_attention(
             q=rope_apply(q, grid_sizes, freqs),
@@ -157,12 +169,7 @@ class WanSelfAttention(nn.Module):
 
 class WanCrossAttention(WanSelfAttention):
 
-    def forward(self,
-                x,
-                context,
-                context_lens,
-                ref_context=None,
-                ref_context_lens=None):
+    def forward(self, x, context, context_lens):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -173,21 +180,11 @@ class WanCrossAttention(WanSelfAttention):
 
         # compute query, key, value
         q = self.norm_q(self.q(x)).view(b, -1, n, d)
-
-        if ref_context is not None:
-            combined = torch.cat([context, ref_context], dim=1)
-            combined_lens = None
-            if context_lens is not None and ref_context_lens is not None:
-                combined_lens = context_lens + ref_context_lens
-        else:
-            combined = context
-            combined_lens = context_lens
-
-        k = self.norm_k(self.k(combined)).view(b, -1, n, d)
-        v = self.v(combined).view(b, -1, n, d)
+        k = self.norm_k(self.k(context)).view(b, -1, n, d)
+        v = self.v(context).view(b, -1, n, d)
 
         # compute attention
-        x = flash_attention(q, k, v, k_lens=combined_lens)
+        x = flash_attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
@@ -240,8 +237,8 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
-        ref_context=None,
-        ref_context_lens=None,
+        ref_hidden_states=None,
+        lambda_ref=0.0,
     ):
         r"""
         Args:
@@ -250,42 +247,39 @@ class WanAttentionBlock(nn.Module):
             seq_lens(Tensor): Shape [B], length of each sequence in batch
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
+            ref_hidden_states(Tensor, optional): Reference video tokens, same shape as x
+                after patch-embed + flatten + pad. Already noised to the current timestep.
+            lambda_ref(float): StyleID mixing coefficient for self-attn K/V.
         """
         assert e.dtype == torch.float32
         with torch.amp.autocast('cuda', dtype=torch.float32):
             e = (self.modulation.unsqueeze(0) + e).chunk(6, dim=2)
         assert e[0].dtype == torch.float32
 
-        # self-attention
+        # self-attention. When ref is provided, modulate it with the same e so K_ref / V_ref
+        # come from tokens at the same timestep / normalization as the content stream.
+        x_sa = self.norm1(x).float() * (1 + e[1].squeeze(2)) + e[0].squeeze(2)
+        if ref_hidden_states is not None and lambda_ref > 0.0:
+            ref_sa = (self.norm1(ref_hidden_states).float()
+                      * (1 + e[1].squeeze(2)) + e[0].squeeze(2))
+        else:
+            ref_sa = None
         y = self.self_attn(
-            self.norm1(x).float() * (1 + e[1].squeeze(2)) + e[0].squeeze(2),
-            seq_lens, grid_sizes, freqs)
+            x_sa, seq_lens, grid_sizes, freqs,
+            ref_hidden_states=ref_sa, lambda_ref=lambda_ref)
         with torch.amp.autocast('cuda', dtype=torch.float32):
             x = x + y * e[2].squeeze(2)
 
         # cross-attention & ffn function
-        def cross_attn_ffn(x, context, context_lens, e, ref_context=None, ref_context_lens=None):
-            x = x + self.cross_attn(
-                self.norm3(x),
-                context,
-                context_lens,
-                ref_context=ref_context,
-                ref_context_lens=ref_context_lens,
-            )
+        def cross_attn_ffn(x, context, context_lens, e):
+            x = x + self.cross_attn(self.norm3(x), context, context_lens)
             y = self.ffn(
                 self.norm2(x).float() * (1 + e[4].squeeze(2)) + e[3].squeeze(2))
             with torch.amp.autocast('cuda', dtype=torch.float32):
                 x = x + y * e[5].squeeze(2)
             return x
 
-        x = cross_attn_ffn(
-            x,
-            context,
-            context_lens,
-            e,
-            ref_context=ref_context,
-            ref_context_lens=ref_context_lens,
-        )
+        x = cross_attn_ffn(x, context, context_lens, e)
         return x
 
 
@@ -444,8 +438,9 @@ class WanModel(ModelMixin, ConfigMixin):
         context,
         seq_len,
         y=None,
-        ref_context=None,
-        ref_context_lens=None,
+        ref_latents=None,
+        lambda_ref=0.0,
+        inject_blocks=None,
     ):
         r"""
         Forward pass through the diffusion model
@@ -514,6 +509,21 @@ class WanModel(ModelMixin, ConfigMixin):
             device=context.device,
         )
 
+        # reference latents: patch-embed + flatten + pad exactly like x so the token grid
+        # matches and RoPE / grid_sizes apply unchanged.
+        ref_hidden_states = None
+        if ref_latents is not None and lambda_ref > 0.0:
+            ref = [self.patch_embedding(u.unsqueeze(0)) for u in ref_latents]
+            ref = [u.flatten(2).transpose(1, 2) for u in ref]
+            ref_hidden_states = torch.cat([
+                torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],
+                          dim=1) for u in ref
+            ])
+
+        if inject_blocks is None:
+            inject_blocks = list(range(len(self.blocks)))
+        inject_set = set(int(i) for i in inject_blocks)
+
         # arguments
         kwargs = dict(
             e=e0,
@@ -522,12 +532,14 @@ class WanModel(ModelMixin, ConfigMixin):
             freqs=self.freqs,
             context=context,
             context_lens=context_lens,
-            ref_context=ref_context,
-            ref_context_lens=ref_context_lens,
         )
 
-        for block in self.blocks:
-            x = block(x, **kwargs)
+        for idx, block in enumerate(self.blocks):
+            if ref_hidden_states is not None and idx in inject_set:
+                x = block(x, ref_hidden_states=ref_hidden_states,
+                          lambda_ref=lambda_ref, **kwargs)
+            else:
+                x = block(x, **kwargs)
 
         # head
         x = self.head(x, e)
