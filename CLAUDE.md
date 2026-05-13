@@ -41,7 +41,7 @@ Examples of target conditions: fog, heavy rain, sandstorm, snowstorm, volcanic a
 
 *(Update this section whenever any of these change.)*
 
-- **Active branch:** `self-attention`
+- **Active branch:** `self_att`
 - **Last validated commit:** `6a4dd4d` — StyleID-style KV-mixing in self-attention; reference re-noised via 3D VAE at every denoising step.
 - **Last validated operating point:** all 30 blocks injected, all timesteps, `λ_ref=0.5`.
 - **Behavior at that operating point:** heavy style transfer, content largely overwhelmed. The injection pathway is confirmed to be working; the lever is cranked too hard. This is the *expected* failure mode for uniform full-strength KV-mixing.
@@ -52,7 +52,7 @@ Examples of target conditions: fog, heavy rain, sandstorm, snowstorm, volcanic a
 
 ## Architecture quick-reference
 
-**Model:** Wan2.2 TI2V 5B. 30 DiT blocks. `dim=3072`, `num_layers=30`, `num_heads=24`. Each block: Self-Attn → Cross-Attn → FFN. 3D VAE with temporal stride 4, spatial stride 8.
+**Model:** Wan2.2 TI2V 5B. 30 DiT blocks. `dim=3072`, `num_layers=30`, `num_heads=24`. Each block: Self-Attn → Cross-Attn → FFN. 3D VAE with temporal stride 4, spatial stride 16 (`vae_stride = (4, 16, 16)` in `wan/configs/wan_ti2v_5B.py`; TI2V 5B uses 16, unlike the 14B-series VAE which uses 8).
 
 **Reference injection (current, post-`6a4dd4d`):**
 
@@ -217,3 +217,4 @@ Orthogonal to T1.1, runnable today: same prompt, ref, seed=42, λ=0.5, but `--in
 - Do not push model weights to git.
 - Do not delete experimental branches that didn't pan out — they're part of the writeup.
 - Do not overwrite output directories. Always use a timestamped subfolder.
+- **Claude must never autonomously create branches, commit, push, open PRs, merge PRs, tag, or perform any other git state-changing action.** All such actions are user-only decisions. Claude's role is strictly to *guide* the user — explain what command to run, why, and when — and wait for the user to execute it. This applies even when the Git / branch protocol above says "branch off `develop`," "tag the result," "merge into `develop`," etc.: those steps describe what *the user* will do, and Claude only proposes them. If Claude believes a git action is warranted, it must surface the recommendation and stop, not run it.
