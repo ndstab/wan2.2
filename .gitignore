@@ -10,3 +10,9 @@ outputs*
 ref_videos*
 .ipynb_checkpoints*
 dump/
+# Weights and captured latents — never push these.
+*.pt
+*.pth
+*.safetensors
+*.bin
+captures/

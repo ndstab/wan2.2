@@ -79,6 +79,14 @@ def _validate_args(args):
     if args.task == "i2v-A14B":
         assert args.image is not None, "Please specify the image path for i2v."
 
+    # Latent-inspection capture flags (T1.1). All three must be provided together,
+    # or all three must be None.
+    capture_flags = [args.capture_blocks, args.capture_timesteps, args.capture_dir]
+    if any(f is not None for f in capture_flags):
+        assert all(f is not None for f in capture_flags), (
+            "--capture_blocks, --capture_timesteps, and --capture_dir must all be "
+            "set together (or all left unset).")
+
     cfg = WAN_CONFIGS[args.task]
 
     if args.sample_steps is None:
@@ -214,6 +222,26 @@ def _parse_args():
         default=None,
         help="Comma-separated block indices to inject into (e.g. '20,21,22'). "
              "Default: all blocks.")
+    parser.add_argument(
+        "--capture_blocks",
+        type=str,
+        default=None,
+        help="Comma-separated DiT block indices to capture post-block residual "
+             "latents from (e.g. '0,7,14,21,28,29'). Captures only fire on the "
+             "conditional CFG pass. Requires --capture_timesteps and "
+             "--capture_dir to be set as well.")
+    parser.add_argument(
+        "--capture_timesteps",
+        type=str,
+        default=None,
+        help="Comma-separated denoising-step indices (0-based, into the sampling "
+             "schedule) at which to capture. Example: '0,12,25,37,49' for "
+             "sampling_steps=50.")
+    parser.add_argument(
+        "--capture_dir",
+        type=str,
+        default=None,
+        help="Directory to write captures.pt into. Created if it doesn't exist.")
     parser.add_argument(
         "--sample_solver",
         type=str,
@@ -473,7 +501,14 @@ def generate(args):
             lambda_ref=args.lambda_ref,
             inject_blocks=(
                 [int(i) for i in args.inject_blocks.split(',')]
-                if args.inject_blocks else None))
+                if args.inject_blocks else None),
+            capture_blocks=(
+                [int(i) for i in args.capture_blocks.split(',')]
+                if args.capture_blocks else None),
+            capture_timesteps=(
+                [int(i) for i in args.capture_timesteps.split(',')]
+                if args.capture_timesteps else None),
+            capture_dir=args.capture_dir)
     elif "animate" in args.task:
         logging.info("Creating Wan-Animate pipeline.")
         wan_animate = wan.WanAnimate(

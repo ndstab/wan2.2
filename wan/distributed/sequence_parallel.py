@@ -71,6 +71,7 @@ def sp_dit_forward(
     ref_latents=None,
     lambda_ref=0.0,
     inject_blocks=None,
+    capture_t_idx=None,
 ):
     """
     x:              A list of videos each with shape [C, T, H, W].
@@ -146,6 +147,11 @@ def sp_dit_forward(
         inject_blocks = list(range(len(self.blocks)))
     inject_set = set(int(i) for i in inject_blocks)
 
+    # Record per-run / per-timestep capture metadata before the block loop. Only rank 0
+    # bothers writing — captures are flushed from rank 0 at the end of the denoising loop.
+    if self._capture_config is not None and capture_t_idx is not None and get_rank() == 0:
+        self._record_meta(capture_t_idx, t, grid_sizes, seq_len)
+
     # arguments
     kwargs = dict(
         e=e0,
@@ -156,12 +162,24 @@ def sp_dit_forward(
         context_lens=context_lens,
     )
 
+    # SP gather function for captures: gathers x along the seq dim across ranks.
+    def _sp_gather(t_chunk):
+        return gather_forward(t_chunk, dim=1)
+
     for idx, block in enumerate(self.blocks):
         if ref_hidden_states is not None and idx in inject_set:
             x = block(x, ref_hidden_states=ref_hidden_states,
                       lambda_ref=lambda_ref, **kwargs)
         else:
             x = block(x, **kwargs)
+        if (self._capture_config is not None and capture_t_idx is not None
+                and idx in self._capture_config['blocks']
+                and int(capture_t_idx) in self._capture_config['timesteps']):
+            # gather_forward must run on every rank (collective op), but only rank 0
+            # actually stores the result.
+            x_full = _sp_gather(x)
+            if get_rank() == 0:
+                self._capture_block_output(idx, x_full, capture_t_idx)
 
     # head
     x = self.head(x, e)

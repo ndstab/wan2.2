@@ -41,7 +41,7 @@ Examples of target conditions: fog, heavy rain, sandstorm, snowstorm, volcanic a
 
 *(Update this section whenever any of these change.)*
 
-- **Active branch:** `self_att`
+- **Active branch:** `latent_inspection` (forked off `self_att`, the project trunk). Work in progress — T1.1 scaffold landed but not yet validated against a cluster run.
 - **Last validated commit:** `6a4dd4d` — StyleID-style KV-mixing in self-attention; reference re-noised via 3D VAE at every denoising step.
 - **Last validated operating point:** all 30 blocks injected, all timesteps, `λ_ref=0.5`.
 - **Behavior at that operating point:** heavy style transfer, content largely overwhelmed. The injection pathway is confirmed to be working; the lever is cranked too hard. This is the *expected* failure mode for uniform full-strength KV-mixing.
@@ -160,15 +160,48 @@ Address the professor's point that a single λ is too coarse a knob; the content
 
 **Sub-steps:**
 
-- [ ] Branch off develop: `git checkout -b exp/latent-inspection develop`.
-- [ ] Add a `LatentCapture` hook that registers on `WanAttentionBlock.forward` at post-self-attn and post-cross-attn points.
-- [ ] CLI flags in `generate.py`: `--capture_blocks` (list of int) and `--capture_timesteps` (list of int).
-- [ ] Save captured latents to `outputs/<run>/latents/block_<N>_t_<T>.pt`. Filename should round-trip cleanly to `(block, t)`.
-- [ ] Add `decode_latent.py`: load a saved latent, run through VAE decode, save as PNG (single frame) or short MP4.
-- [ ] **Baseline run:** no injection, fixed prompt + seed, capture all 30 blocks at every 5th timestep. Save under `outputs/latent-inspection/baseline-<timestamp>/`.
+- [x] Branch off develop: `git checkout -b exp/latent-inspection develop`. *(User created `latent_inspection` off `self_att`; equivalent.)*
+- [x] Add a capture mechanism on `WanAttentionBlock.forward`. *(Implemented inline in `WanModel.forward` rather than via a separate `LatentCapture` hook class — keeps the change inside one file and avoids adding hook-management surface area. Captures post-block residual `x` (the full self-attn + cross-attn + FFN output), keyed by `(block_idx, t_idx)`, fp16/CPU. Mirrored in `sp_dit_forward` with cross-rank gather.)*
+- [x] CLI flags in `generate.py`: `--capture_blocks`, `--capture_timesteps`, `--capture_dir` (all three must be set together).
+- [x] Save captured latents. **Design deviation:** single `captures.pt` dump per run (under `--capture_dir`) instead of one `.pt` per (block, t). Reason: atomic flush at end-of-loop is simpler, smaller filesystem load, and metadata (grid_sizes, t-values, patch_size) lives alongside the tensors. The dump is a dict with `{meta, grid_sizes, seq_len, timestep_values, blocks: {(block, t): tensor}}`.
+- [x] Add `decode_latent.py`: loads `captures.pt`, re-derives `e` from saved `t` values, applies `model.head → unpatchify → vae.decode`, saves middle-frame PNG per `(block, t)` as `block_<NN>_t_<TT>.png`.
+- [ ] **Baseline run:** no injection, fixed prompt + seed, capture default block/timestep set. Save under `outputs/latent-inspection/baseline-<timestamp>/`. **Suggested defaults:** `--capture_blocks 0,7,14,21,28,29 --capture_timesteps 0,12,25,37,49 --sample_steps 50`. Est. disk: ~4.8 GB per run (30 captures × 160 MB at default 1280×704, 121-frame, bf16). Expand to all 30 blocks only after this works.
 - [ ] **Injected run:** λ=0.5, all blocks, same prompt + seed, same capture points. Save under `outputs/latent-inspection/injected-<timestamp>/`.
 - [ ] Diff: side-by-side decoded frames per (block, timestep). Eyeball where injection visibly diverges from baseline. Note observations in Changelog.
 - [ ] Tag: `result/YYYY-MM-DD-latent-inspection-baseline`.
+
+**How to run (cluster):**
+
+Baseline (no ref):
+```
+torchrun --nproc_per_node=2 generate.py \
+    --task ti2v-5B --ckpt_dir /scratch/IITB/ai-at-ieor/23b0702/Wan2.2/Wan2.2-TI2V-5B \
+    --size 1280*704 --frame_num 121 --sample_steps 50 \
+    --prompt "car on city street" --base_seed 42 \
+    --capture_blocks 0,7,14,21,28,29 --capture_timesteps 0,12,25,37,49 \
+    --capture_dir outputs/latent-inspection/baseline-$(date +%Y%m%d_%H%M%S) \
+    --ulysses_size 2
+```
+
+Injected (sandstorm ref, λ=0.5):
+```
+torchrun --nproc_per_node=2 generate.py \
+    --task ti2v-5B --ckpt_dir /scratch/.../Wan2.2-TI2V-5B \
+    --size 1280*704 --frame_num 121 --sample_steps 50 \
+    --prompt "car on city street" --base_seed 42 \
+    --ref_video /scratch/.../ref_videos/sandstorm.mp4 --lambda_ref 0.5 \
+    --capture_blocks 0,7,14,21,28,29 --capture_timesteps 0,12,25,37,49 \
+    --capture_dir outputs/latent-inspection/injected-$(date +%Y%m%d_%H%M%S) \
+    --ulysses_size 2
+```
+
+Decode (single GPU, after a run):
+```
+python decode_latent.py \
+    --captures outputs/latent-inspection/<run>/captures.pt \
+    --ckpt_dir /scratch/.../Wan2.2-TI2V-5B \
+    --output_dir outputs/latent-inspection/<run>/decoded
+```
 
 ---
 
@@ -195,6 +228,8 @@ Orthogonal to T1.1, runnable today: same prompt, ref, seed=42, λ=0.5, but `--in
 - 2026-XX-XX — `compute_csd.py` — Replaced WSIS (CLIP cosine) with CSD ViT-L. — Benchmark-comparable to PickStyle's reported 0.37.
 - 2026-XX-XX — `cfg` — Implemented CS-CFG (three forward passes, independent style/content scales). — Parked pending Tier-1 results; effectiveness uncertain.
 - 2026-05-13 — repo root — Created CLAUDE.md (this file). — Project state consolidated; Tier 1 active.
+- 2026-05-16 — `latent_inspection` (off `self_att`) — Implemented T1.1 capture scaffold: `_init_captures` / `_capture_block_output` / `_dump_captures` on `WanModel`; mirrored in `sp_dit_forward` (with `gather_forward` across SP ranks); plumbed `--capture_blocks`, `--capture_timesteps`, `--capture_dir` through `generate.py` → `WanTI2V.generate()` → `t2v()`. Captures only fire on the conditional CFG pass. Added `decode_latent.py`. Added `*.pt`/`*.pth`/`*.safetensors`/`captures/` to `.gitignore`. — Smoke tests of helper logic pass locally; awaiting cluster run for baseline + injected atlases.
+- 2026-05-16 — `latent_inspection` — Design deviation from roadmap: dump is one `captures.pt` per run instead of per-(block,t) `.pt` files. Decoded PNGs still follow the `block_<NN>_t_<TT>.png` naming. — Simpler atomic flush, less filesystem churn on parallel FS.
 
 ---
 

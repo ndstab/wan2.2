@@ -174,7 +174,10 @@ class WanTI2V:
                  offload_model=True,
                  ref_video_path=None,
                  lambda_ref=0.5,
-                 inject_blocks=None):
+                 inject_blocks=None,
+                 capture_blocks=None,
+                 capture_timesteps=None,
+                 capture_dir=None):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -240,7 +243,10 @@ class WanTI2V:
             offload_model=offload_model,
             ref_video_path=ref_video_path,
             lambda_ref=lambda_ref,
-            inject_blocks=inject_blocks)
+            inject_blocks=inject_blocks,
+            capture_blocks=capture_blocks,
+            capture_timesteps=capture_timesteps,
+            capture_dir=capture_dir)
 
     def t2v(self,
             input_prompt,
@@ -255,7 +261,10 @@ class WanTI2V:
             offload_model=True,
             ref_video_path=None,
             lambda_ref=0.5,
-            inject_blocks=None):
+            inject_blocks=None,
+            capture_blocks=None,
+            capture_timesteps=None,
+            capture_dir=None):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -401,7 +410,28 @@ class WanTI2V:
                 self.model.to(self.device)
                 torch.cuda.empty_cache()
 
-            for _, t in enumerate(tqdm(timesteps)):
+            # Latent-inspection capture setup (T1.1). Defaulting to (None, None) means
+            # the model performs zero capture work — both branches of WanModel.forward
+            # short-circuit on capture_t_idx=None.
+            capture_active = (capture_blocks is not None
+                              and capture_timesteps is not None
+                              and len(capture_blocks) > 0
+                              and len(capture_timesteps) > 0)
+            if capture_active:
+                # Validate ranges to fail loudly here rather than silently no-op on cluster.
+                num_layers = len(self.model.blocks)
+                for b in capture_blocks:
+                    if not (0 <= int(b) < num_layers):
+                        raise ValueError(
+                            f"--capture_blocks contains {b}, must be in [0, {num_layers})")
+                for ti in capture_timesteps:
+                    if not (0 <= int(ti) < len(timesteps)):
+                        raise ValueError(
+                            f"--capture_timesteps contains {ti}, must be in "
+                            f"[0, {len(timesteps)}) for sampling_steps={len(timesteps)}")
+                self.model._init_captures(capture_blocks, capture_timesteps)
+
+            for _step_idx, t in enumerate(tqdm(timesteps)):
                 latent_model_input = latents
                 timestep = [t]
 
@@ -432,8 +462,13 @@ class WanTI2V:
                         'inject_blocks': inject_blocks,
                     }
 
+                # Pass capture_t_idx only on the conditional pass — uncond pass
+                # produces identically-shaped intermediates; capturing both doubles disk
+                # for no extra information.
+                cap_kwargs = {'capture_t_idx': _step_idx} if capture_active else {}
                 noise_pred_cond = self.model(
-                    latent_model_input, t=timestep, **arg_c, **ref_kwargs)[0]
+                    latent_model_input, t=timestep, **arg_c, **ref_kwargs,
+                    **cap_kwargs)[0]
                 noise_pred_uncond = self.model(
                     latent_model_input, t=timestep, **arg_null, **ref_kwargs)[0]
 
@@ -448,6 +483,17 @@ class WanTI2V:
                     generator=seed_g)[0]
                 latents = [temp_x0.squeeze(0)]
             x0 = latents
+            # Flush latent captures (T1.1) before model is offloaded — rank 0 only.
+            if capture_active and self.rank == 0 and capture_dir is not None:
+                import os
+                os.makedirs(capture_dir, exist_ok=True)
+                cap_path = os.path.join(capture_dir, 'captures.pt')
+                self.model._dump_captures(cap_path)
+                logging.info(f"[capture] wrote {cap_path}")
+            elif capture_active:
+                # Non-rank-0 still clears its (empty) state to free memory.
+                self.model._captures = None
+                self.model._capture_config = None
             if offload_model:
                 self.model.cpu()
                 torch.cuda.synchronize()

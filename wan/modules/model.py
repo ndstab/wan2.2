@@ -431,6 +431,86 @@ class WanModel(ModelMixin, ConfigMixin):
         # initialize weights
         self.init_weights()
 
+        # latent inspection (T1.1): externally configured via _init_captures().
+        self._capture_config = None
+        self._captures = None
+
+    def _init_captures(self, blocks, timesteps):
+        """Configure latent capture for this run.
+
+        Args:
+            blocks: iterable of int block indices (0 .. num_layers-1).
+            timesteps: iterable of int timestep indices into the denoising schedule.
+        """
+        if blocks is None or timesteps is None or len(blocks) == 0 or len(timesteps) == 0:
+            self._capture_config = None
+            self._captures = None
+            return
+        self._capture_config = {
+            'blocks': set(int(b) for b in blocks),
+            'timesteps': set(int(t) for t in timesteps),
+        }
+        self._captures = {
+            'meta': {
+                'patch_size': tuple(self.patch_size),
+                'dim': int(self.dim),
+                'out_dim': int(self.out_dim),
+                'freq_dim': int(self.freq_dim),
+                'num_layers': int(self.num_layers),
+                'capture_blocks': sorted(self._capture_config['blocks']),
+                'capture_timesteps': sorted(self._capture_config['timesteps']),
+            },
+            'timestep_values': {},
+            'grid_sizes': None,
+            'seq_len': None,
+            'blocks': {},
+        }
+
+    def _record_meta(self, capture_t_idx, t_value, grid_sizes, seq_len):
+        if self._captures is None:
+            return
+        if self._captures['grid_sizes'] is None:
+            self._captures['grid_sizes'] = grid_sizes.detach().cpu()
+            self._captures['seq_len'] = int(seq_len)
+        if capture_t_idx is not None and capture_t_idx not in self._captures['timestep_values']:
+            if torch.is_tensor(t_value):
+                t_value = t_value.flatten()[0].item()
+            self._captures['timestep_values'][int(capture_t_idx)] = float(t_value)
+
+    def _capture_block_output(self, block_idx, x, capture_t_idx, gather_fn=None):
+        """Store post-block residual if (block_idx, capture_t_idx) is requested.
+
+        Args:
+            block_idx: int.
+            x: current residual stream, shape [B, S_local, dim]. S_local may be a
+                sequence-parallel shard; pass gather_fn to gather across ranks.
+            capture_t_idx: int index into denoising schedule, or None to skip.
+            gather_fn: optional callable(x) -> x_full for SP gather.
+        """
+        if self._capture_config is None or capture_t_idx is None:
+            return
+        if block_idx not in self._capture_config['blocks']:
+            return
+        if int(capture_t_idx) not in self._capture_config['timesteps']:
+            return
+        x_full = gather_fn(x) if gather_fn is not None else x
+        # store batch index 0 only (cond pass), as fp16 on CPU
+        self._captures['blocks'][(int(block_idx), int(capture_t_idx))] = (
+            x_full[0].detach().to(torch.float16).cpu()
+        )
+
+    def _dump_captures(self, path):
+        """Flush captures dict to disk as a single .pt file. No-op if nothing captured."""
+        if self._captures is None or not self._captures['blocks']:
+            return None
+        import os
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        torch.save(self._captures, path)
+        # Free memory after dump
+        self._captures = None
+        self._capture_config = None
+        return path
+
     def forward(
         self,
         x,
@@ -441,6 +521,7 @@ class WanModel(ModelMixin, ConfigMixin):
         ref_latents=None,
         lambda_ref=0.0,
         inject_blocks=None,
+        capture_t_idx=None,
     ):
         r"""
         Forward pass through the diffusion model
@@ -524,6 +605,10 @@ class WanModel(ModelMixin, ConfigMixin):
             inject_blocks = list(range(len(self.blocks)))
         inject_set = set(int(i) for i in inject_blocks)
 
+        # Record per-run / per-timestep capture metadata before the block loop.
+        if self._capture_config is not None and capture_t_idx is not None:
+            self._record_meta(capture_t_idx, t, grid_sizes, seq_len)
+
         # arguments
         kwargs = dict(
             e=e0,
@@ -540,6 +625,7 @@ class WanModel(ModelMixin, ConfigMixin):
                           lambda_ref=lambda_ref, **kwargs)
             else:
                 x = block(x, **kwargs)
+            self._capture_block_output(idx, x, capture_t_idx)
 
         # head
         x = self.head(x, e)
