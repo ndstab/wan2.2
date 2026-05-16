@@ -28,6 +28,7 @@ import argparse
 import logging
 import math
 import os
+import traceback
 
 import torch
 from PIL import Image
@@ -86,10 +87,13 @@ def _make_e_for_step(model, t_value, seq_len, device):
     t = torch.full((1, seq_len), float(t_value), dtype=torch.float32, device=device)
     bt = t.size(0)
     flat = t.flatten()
-    e = model.time_embedding(
-        sinusoidal_embedding_1d(model.freq_dim, flat).unflatten(0, (bt, seq_len)).float()
-    )
-    return e
+    # Force fp32 — Head.forward asserts e.dtype == float32 and an outer bf16
+    # autocast would otherwise demote time_embedding's output.
+    with torch.amp.autocast('cuda', dtype=torch.float32):
+        e = model.time_embedding(
+            sinusoidal_embedding_1d(model.freq_dim, flat).unflatten(0, (bt, seq_len)).float()
+        )
+    return e.float()
 
 
 @torch.no_grad()
@@ -180,7 +184,8 @@ def main():
                     device, dtype)
             except Exception as exc:
                 logging.error(
-                    f"decode failed for block={block_idx} t_idx={t_idx}: {exc}")
+                    f"decode failed for block={block_idx} t_idx={t_idx}: "
+                    f"{type(exc).__name__}: {exc!r}\n{traceback.format_exc()}")
                 continue
 
             F_pix = pixels.shape[1]
