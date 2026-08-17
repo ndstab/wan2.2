@@ -488,8 +488,20 @@ class WanTI2V:
                 import os
                 os.makedirs(capture_dir, exist_ok=True)
                 cap_path = os.path.join(capture_dir, 'captures.pt')
-                self.model._dump_captures(cap_path)
-                logging.info(f"[capture] wrote {cap_path}")
+                # A failed dump must not destroy the generation. Writing ~8 GB to a
+                # quota'd parallel FS can fail mid-write (see 2026-08-14 changelog);
+                # without this guard the exception propagates and we lose the video
+                # too, after paying the full sampling cost.
+                try:
+                    self.model._dump_captures(cap_path)
+                    logging.info(f"[capture] wrote {cap_path}")
+                except Exception as exc:
+                    logging.error(
+                        f"[capture] dump FAILED to {cap_path}: "
+                        f"{type(exc).__name__}: {exc}. Continuing so the video "
+                        f"still gets produced.")
+                    self.model._captures = None
+                    self.model._capture_config = None
             elif capture_active:
                 # Non-rank-0 still clears its (empty) state to free memory.
                 self.model._captures = None

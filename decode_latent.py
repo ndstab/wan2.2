@@ -58,6 +58,14 @@ def _parse_args():
                    help="cuda or cpu (cpu will be very slow).")
     p.add_argument("--limit", type=int, default=None,
                    help="Only decode the first N captures (for quick tests).")
+    p.add_argument("--only_blocks", type=str, default=None,
+                   help="Comma-separated block indices to decode (e.g. "
+                        "'0,15,29'). Default: every block present in the dump. "
+                        "Unlike --limit this selects a real subset rather than "
+                        "a prefix of the sorted key order.")
+    p.add_argument("--only_timesteps", type=str, default=None,
+                   help="Comma-separated denoising-step indices to decode "
+                        "(e.g. '0,10,20,49'). Default: every step present.")
     return p.parse_args()
 
 
@@ -166,8 +174,17 @@ def main():
 
     # Deterministic order: sort by (block, timestep).
     keys = sorted(blocks.keys())
+    if args.only_blocks:
+        want_b = {int(v) for v in args.only_blocks.split(',')}
+        keys = [k for k in keys if k[0] in want_b]
+    if args.only_timesteps:
+        want_t = {int(v) for v in args.only_timesteps.split(',')}
+        keys = [k for k in keys if k[1] in want_t]
     if args.limit is not None:
         keys = keys[:args.limit]
+    if not keys:
+        raise SystemExit("No captures matched the requested block/timestep filters.")
+    logging.info(f"decoding {len(keys)} captures: {keys}")
 
     with torch.amp.autocast(device.type, dtype=dtype, enabled=(device.type == 'cuda')):
         for (block_idx, t_idx) in keys:
