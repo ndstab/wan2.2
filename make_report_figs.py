@@ -166,6 +166,30 @@ def fig_dataset():
     shutil.rmtree(tmp)
 
 
+def fig_showcase():
+    """Dashcam prompt x four Unreal references, frame 40: ref | none | early | all."""
+    d = os.path.join(O, 't5_paramrudra')
+    tmp = os.path.join(OUT, '_tmp')
+    os.makedirs(tmp, exist_ok=True)
+
+    def frame(src, name):
+        png = os.path.join(tmp, name + '.png')
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf',
+                        'select=eq(n\\,40),scale=640:-2', '-vframes', '1', png], check=True)
+        return png
+    base = frame(os.path.join(d, 'showcase', 'base.mp4'), 'base')
+    tiles = []
+    for w in ['rain', 'snow', 'fog', 'storm']:
+        tiles += [(frame(os.path.join(d, 'refs', w + '.mp4'), 'ref_' + w), f'{w} reference'),
+                  (base, 'no injection'),
+                  (frame(os.path.join(d, 'showcase', w + '_early.mp4'), w + '_e'),
+                   f'{w}: early only (sigma >= 0.9)'),
+                  (frame(os.path.join(d, 'showcase', w + '_all.mp4'), w + '_a'),
+                   f'{w}: all steps')]
+    labelled_grid(tiles, 4, os.path.join(OUT, 'fig_showcase.jpg'))
+    shutil.rmtree(tmp)
+
+
 COPY = {
     'latent-inspection/analysis/lambda_sweep_full.jpg': 'fig_lambda_sweep.jpg',
     'latent-inspection/analysis/block_subsets.jpg': 'fig_block_subsets.jpg',
@@ -190,6 +214,7 @@ if __name__ == '__main__':
     fig_cross_env()
     fig_steer_sweep()
     fig_dataset()
+    fig_showcase()
     print('figures in', OUT)
     for f in sorted(os.listdir(OUT)):
         print('  ', f)

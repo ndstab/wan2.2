@@ -39,7 +39,7 @@ We find a usable operating point ($\lam{=}0.10$, all 30 blocks) at which scene c
 We then ask \emph{why} it works by analysing the model with paired data: 167 pixel-aligned clear/weather video pairs from four simulated worlds (WeatherWeaver) and 60 single-factor image pairs.
 Three independent probes agree on one finding: \textbf{Wan2.2 commits to the weather roughly twice as early in the denoising trajectory as it commits to scene content}, inside a high-noise window $\sigma \approx 0.92$--$0.98$, and an exact ODE inversion shows the weather is locked into the initial noise by $\sigma \approx 0.9$.
 Inside the network the weather type can be decoded from the residual stream with 92\% accuracy (chance 17\%).
-We report two negative results---diffusion inversion of the reference and mean-vector activation steering both fail to improve transfer, for reasons we diagnose---and one positive consequence: restricting reference injection to the analysis-derived early window carries most of the weather effect, while injecting only in the late steps does almost nothing. On paired ground truth, early-gated injection is the only setting that moves the generation closer to the real weather render than doing nothing on every pair tested.
+We report two negative results---diffusion inversion of the reference and mean-vector activation steering both fail to improve transfer, for reasons we diagnose---and one positive consequence: restricting reference injection to the analysis-derived early window carries most of the weather effect, while injecting only in the late steps does almost nothing. On 12 paired ground-truth pairs, early-gated injection beats all-step and late-only injection on every pair, and beats doing nothing on 9 of 12; in text-to-video, however, the effect barely depends on which weather reference is used.
 \end{abstract}
 
 \tableofcontents
@@ -460,13 +460,27 @@ We evaluate gated injection exactly as steering, with one safeguard against leak
 
 \input{tables/kv_eval.tex}
 
-\textbf{Result} (Table~\ref{tab:kv}; the four weather variants of one camera path, nine arms each): \textbf{injection gated to the early window $\sigma\ge0.9$ at $\lam{=}0.1$ is the only setting that lands closer to the real weather render than doing nothing on every pair} (4/4, mean err 0.90; PSNR to the weather render 18.7 versus 15.8\,dB without injection).
-Three patterns are clear.
-(a) \emph{More injection moves further along the true weather direction but overshoots}: all-step injection realises 2.6$\times$ more of the weather difference (frac 0.58 versus 0.22) yet lands further from the target (err 1.14) because it also rewrites the scene (PSNR to the clear video 12.0 versus 19.8\,dB).
-(b) \emph{The window matters more than the amount}: the late-only window injects on 32 steps against the early window's 18 yet lands further from the target and keeps less of the scene (err 1.09, 1/4 pairs; PSNR to the clear video 14.2\,dB), and widening the early window to $\sigma\ge0.8$ or doubling $\lam$ trades scene fidelity for weather and loses pairs.
-(c) \emph{The direction is right in every arm} (cosine 0.40--0.52 with the true difference, against 0.2--0.4 for mean-vector steering), so what separates good from bad arms is magnitude and scene damage, not direction.
-The same pair run earlier on a different cluster (prajna) reproduced to within 0.01 in err, so these are not run-to-run noise.
-The remaining weakness is the number of pairs: all four share one camera path, and the runs on two further paths were in progress when this report was written.
+\textbf{Result} (Table~\ref{tab:kv}; 12 pairs, the four weather variants of three camera paths, nine arms each).
+The clearest finding is a \textbf{ranking that holds on every pair}: at both $\lam{=}0.1$ and $\lam{=}0.2$, injection gated to the early window $\sigma\ge0.9$ lands closer to the real weather render than all-step injection on 12/12 pairs and closer than late-only injection on 12/12 pairs, while keeping more of the scene than all-step injection on 12/12 pairs.
+Against \emph{doing nothing} the gain is real but modest: the best arm ($\lam{=}0.1$, $\sigma\ge0.9$) beats the un-injected regeneration on 8/12 pairs in the latent metric (mean err 0.98) and on 9/12 in pixel PSNR to the weather render (19.8 versus 18.3\,dB on average), and it realises only 14\% of the true weather difference.
+All-step injection, the method's original form, is worse than doing nothing on average (err 1.20, 3/12 pairs) because it rewrites the scene (PSNR to the clear video 16.0 versus 23.1\,dB for the early window).
+Two further patterns:
+(a) \emph{the window matters more than the amount}---the late-only window injects on 32 steps against the early window's 18 but is worse on every pair;
+(b) \emph{the direction is right in every arm} (cosine 0.30--0.39 with the true difference), so arms differ by magnitude and scene damage rather than direction.
+Path 0000 is the most favourable (4/4 pairs, mean err 0.90); on paths 0001 and 0002 the best arm is at or above 1 on three of four pairs each. Reference mismatch does not explain this on its own: one failing pair has a reference that is weaker than its target (rain 2/fog 5 against rain 3/fog 7), but another fails with an almost identical weather vector (cloud 3 against cloud 2, same fog and snowflakes).
+The first pair reproduced a run made a month earlier on a different cluster to within 0.01 in err.
+
+\begin{figure}[!htb]
+  \centering
+  \includegraphics[width=\linewidth]{figs/fig_showcase.jpg}
+  \caption{\textbf{Text-to-video with four first-person Unreal references} (dashcam prompt, seed 42, $\lam{=}0.1$, frame 40). The four references are visibly different, but the generations are not: outputs for different references are much closer to each other (PSNR 21--24\,dB) than to the un-injected output (14\,dB early-only, 10--11\,dB all-step). What transfers is a shared darkening (mean brightness 123 $\rightarrow$ $\approx$101 early-only, $\approx$69 all-step) and a change of layout, not rain, snow or fog.}
+  \label{fig:showcase}
+\end{figure}
+
+\paragraph{A limit made visible.}
+Figure~\ref{fig:showcase} runs the same comparison in text-to-video, where no inverted scene pins the content.
+The early window again carries a large part of the effect at less cost to the image, but the effect is \textbf{almost independent of which reference is used}: rain, snow, fog and storm references give near-identical outputs, darker than the baseline with the same blue sky.
+This is consistent with the analysis---the cross-world weather direction is dominated by a generic ``bad weather'' component, and type-specific information is weaker---and it means that at content-preserving strengths reference injection transfers the \emph{shared} part of adverse weather (darkening, overcast light) far more than the part that distinguishes one weather from another.
 
 %=====================================================================
 \section{Conclusion and Future Work}
@@ -474,15 +488,15 @@ The remaining weakness is the number of pairs: all four share one camera path, a
 
 We set out to make a frozen video model render weather from an example, and ended up mapping when and where the model decides the weather.
 The answers are consistent across three probes, four simulated worlds and an image set: \textbf{Wan2.2 commits to the weather in the first, highest-noise steps, before it commits to the scene}; an exact inversion shows the weather locked into the noise by $\sigma\approx0.9$; and the weather type is linearly readable in the residual stream.
-Practically, reference K/V injection at $\lam{=}0.10$ is a working training-free method, and gating it to the early window carries most of its effect.
+Practically, reference K/V injection at $\lam{=}0.10$ is a working training-free method, and gating it to the early window beats all-step injection on every evaluated pair; its gain over no injection is modest, though, and in text-to-video it transfers the shared darkening of bad weather more than any specific weather.
 Two intuitive improvements---inverting the reference and steering along a mean weather direction---did not help, and we explained why.
 
 \paragraph{Limitations.}
 (i) All paired data is synthetic (Unreal renders, SDXL edits); no real weather footage was evaluated.
 (ii) Transfer is mostly of light and atmosphere; heavy rain and snow texture do not carry over at content-preserving strengths.
 (iii) Early injection also influences layout, so gating does not by itself protect content in text-to-video.
-(iv) The ground-truth evaluation of gated injection covers four pairs from one camera path in one world.
-(v) There is still no reliable automatic metric for weather in generated video without paired ground truth.
+(iv) The ground-truth evaluation of gated injection covers 12 pairs from three camera paths in one world, and its gain over doing nothing is modest (9/12 pairs). (v) In text-to-video the injected effect is largely the same for rain, snow, fog and storm references.
+(vi) There is still no reliable automatic metric for weather in generated video without paired ground truth.
 
 \paragraph{Future work.}
 \begin{itemize}

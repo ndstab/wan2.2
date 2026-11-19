@@ -1,6 +1,6 @@
 {
  "ckpt_dir": "/scratch/IITB/ai-at-ieor/23b0702/Wan2.2/Wan2.2-TI2V-5B",
- "shards": "/scratch/IITB/ai-at-ieor/23b0702/t5/data/scene0/0000.tar",
+ "shards": "/scratch/IITB/ai-at-ieor/23b0702/t5/data/scene0/0002.tar",
  "ref_pool": "/scratch/IITB/ai-at-ieor/23b0702/t5/data/scene0/*.tar",
  "out": "/scratch/IITB/ai-at-ieor/23b0702/t5/results/evkv",
  "lambdas": "0.1,0.2",
