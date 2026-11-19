@@ -1,0 +1,20 @@
+% PRELIMINARY: 3 pairs (one per scene-0 path), from the 2026-10-20 prajna run.
+% Regenerate from the full run with:  python summarize_evkv.py <metrics dir> > report/tables/kv_eval.tex
+\begin{table}[!htb]
+\centering\small
+\begin{tabular}{l ccc ccc ccc}
+\toprule
+& \multicolumn{3}{c}{pair 0000/1 (c5 r9 f1)} & \multicolumn{3}{c}{pair 0001/1 (c5 r3 f7)} & \multicolumn{3}{c}{pair 0002/1 (c7 r6 f10)} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}
+arm & err$\downarrow$ & W$\uparrow$ & C$\uparrow$ & err & W & C & err & W & C \\
+\midrule
+no injection             & 1.00 & 17.8 & 42.7 & 1.00 & 21.2 & 44.9 & 1.00 & 17.1 & 42.4 \\
+$\lam{=}0.1$, all steps   & 1.12 & 15.8 & 12.3 & 1.61 & 16.5 & 16.2 & 0.97 & 17.6 & 20.0 \\
+$\lam{=}0.1$, $\sigma\ge0.9$ & \textbf{0.95} & \textbf{20.7} & 20.9 & 1.17 & 20.0 & 19.9 & 0.91 & 18.1 & 28.7 \\
+$\lam{=}0.2$, $\sigma\ge0.9$ & 0.99 & 20.0 & 16.7 & 1.38 & 18.3 & 18.1 & \textbf{0.89} & \textbf{18.9} & 25.3 \\
+$\lam{=}0.05$, $\sigma<0.9$  & 0.97 & 19.2 & 20.4 & 1.17 & 19.1 & 20.3 & 0.95 & 17.1 & 23.4 \\
+\bottomrule
+\end{tabular}
+\caption{\textbf{Paired ground-truth evaluation of reference injection (preliminary, 3 pairs).} err: distance to the real weather render relative to the un-injected regeneration (${<}1$ = closer). W: PSNR (dB) to the real weather render. C: PSNR (dB) to the clear video (content kept). References are weather renders of a \emph{different} camera path with the nearest weather vector (c: cloud, r: rain, f: fog).}
+\label{tab:kv}
+\end{table}

@@ -175,9 +175,11 @@ class WanTI2V:
                  ref_video_path=None,
                  lambda_ref=0.5,
                  inject_blocks=None,
+                 inject_sigma=None,
                  capture_blocks=None,
                  capture_timesteps=None,
-                 capture_dir=None):
+                 capture_dir=None,
+                 ref_inversion=None):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -244,9 +246,11 @@ class WanTI2V:
             ref_video_path=ref_video_path,
             lambda_ref=lambda_ref,
             inject_blocks=inject_blocks,
+            inject_sigma=inject_sigma,
             capture_blocks=capture_blocks,
             capture_timesteps=capture_timesteps,
-            capture_dir=capture_dir)
+            capture_dir=capture_dir,
+            ref_inversion=ref_inversion)
 
     def t2v(self,
             input_prompt,
@@ -262,9 +266,11 @@ class WanTI2V:
             ref_video_path=None,
             lambda_ref=0.5,
             inject_blocks=None,
+            inject_sigma=None,
             capture_blocks=None,
             capture_timesteps=None,
-            capture_dir=None):
+            capture_dir=None,
+            ref_inversion=None):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -348,6 +354,26 @@ class WanTI2V:
             ref_latent_clean = self.vae.encode([frames])[0]  # [C, T, Hl, Wl]
             ref_latent_clean = ref_latent_clean.to(dtype=torch.float32)
 
+        # Optional: PreciseInv-solved noise for the reference, one eps* per
+        # denoising step, produced offline by invert_reference.py. When absent
+        # the loop below falls back to torch.randn exactly as before.
+        ref_eps_cache = None
+        if ref_inversion is not None and ref_latent_clean is not None:
+            _blob = torch.load(os.path.expanduser(ref_inversion),
+                               map_location='cpu')
+            ref_eps_cache = _blob['eps']
+            _cached_shape = tuple(_blob['latent_shape'])
+            if _cached_shape != tuple(ref_latent_clean.shape):
+                raise ValueError(
+                    f"ref_inversion latent shape {_cached_shape} != current "
+                    f"reference latent shape {tuple(ref_latent_clean.shape)}. "
+                    "The inversion must be solved at the same resolution and "
+                    "frame count as the generation.")
+            _ref_eps_sigmas = _blob['sigmas_gen']
+            logging.info(
+                f"Loaded reference inversion: {len(ref_eps_cache)} solved "
+                f"eps* from {ref_inversion}")
+
         noise = [
             torch.randn(
                 target_shape[0],
@@ -392,6 +418,22 @@ class WanTI2V:
                     sigmas=sampling_sigmas)
             else:
                 raise NotImplementedError("Unsupported solver.")
+
+            # The inversion was solved on a specific sigma grid. If this run's
+            # schedule differs, eps*[i] does not correspond to the noise level
+            # it is about to be used at, and the injection would be silently
+            # wrong rather than loudly broken.
+            if ref_eps_cache is not None:
+                _cur = [float(t) / float(self.num_train_timesteps)
+                        for t in timesteps]
+                if len(_cur) != len(_ref_eps_sigmas) or any(
+                        abs(a - b) > 1e-6
+                        for a, b in zip(_cur, _ref_eps_sigmas)):
+                    raise ValueError(
+                        "ref_inversion sigma grid does not match this run's "
+                        f"schedule ({len(_ref_eps_sigmas)} vs {len(_cur)} "
+                        "steps). Re-solve with matching --sample_steps / "
+                        "--sample_shift / --sample_solver.")
 
             # sample videos
             latents = noise
@@ -450,17 +492,30 @@ class WanTI2V:
                 ref_kwargs = {}
                 if ref_latent_clean is not None:
                     sigma = float(t) / float(self.num_train_timesteps)
-                    ref_noise = torch.randn(
-                        ref_latent_clean.shape,
-                        dtype=ref_latent_clean.dtype,
-                        device=ref_latent_clean.device,
-                        generator=seed_g)
+                    if ref_eps_cache is not None:
+                        # PreciseInv-solved eps* for this step, instead of a
+                        # fresh random draw.
+                        ref_noise = ref_eps_cache[_step_idx].to(
+                            device=ref_latent_clean.device,
+                            dtype=ref_latent_clean.dtype)
+                    else:
+                        ref_noise = torch.randn(
+                            ref_latent_clean.shape,
+                            dtype=ref_latent_clean.dtype,
+                            device=ref_latent_clean.device,
+                            generator=seed_g)
                     ref_noised = (1.0 - sigma) * ref_latent_clean + sigma * ref_noise
                     ref_kwargs = {
                         'ref_latents': [ref_noised.to(dtype=self.param_dtype)],
                         'lambda_ref': float(lambda_ref),
                         'inject_blocks': inject_blocks,
                     }
+                    # Sigma-window gate (T1.3 / T5): the ref noise above is still
+                    # drawn every step so the RNG stream, and hence a full window,
+                    # is byte-identical to ungated injection.
+                    if inject_sigma is not None and not (
+                            inject_sigma[0] <= sigma <= inject_sigma[1]):
+                        ref_kwargs = {}
 
                 # Pass capture_t_idx only on the conditional pass — uncond pass
                 # produces identically-shaped intermediates; capturing both doubles disk
@@ -485,7 +540,11 @@ class WanTI2V:
             x0 = latents
             # Flush latent captures (T1.1) before model is offloaded — rank 0 only.
             if capture_active and self.rank == 0 and capture_dir is not None:
-                import os
+                # NOTE: no local `import os` here. `os` is imported at module
+                # level; a redundant import inside this function makes `os`
+                # local to the WHOLE function body, so any earlier use of it
+                # in t2v() raises UnboundLocalError. That is exactly what the
+                # --ref_inversion load at the top of this function hit.
                 os.makedirs(capture_dir, exist_ok=True)
                 cap_path = os.path.join(capture_dir, 'captures.pt')
                 # A failed dump must not destroy the generation. Writing ~8 GB to a

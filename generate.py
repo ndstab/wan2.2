@@ -212,6 +212,14 @@ def _parse_args():
         default=None,
         help="Path to reference weather video for style injection.")
     parser.add_argument(
+        "--ref_inversion",
+        type=str,
+        default=None,
+        help="Path to a PreciseInv-solved reference noise cache from "
+             "invert_reference.py. When set, the per-step reference noise is "
+             "the solved eps* instead of a fresh torch.randn draw. Must have "
+             "been solved at the same resolution, frame count and schedule.")
+    parser.add_argument(
         "--lambda_ref",
         type=float,
         default=0.5,
@@ -222,6 +230,13 @@ def _parse_args():
         default=None,
         help="Comma-separated block indices to inject into (e.g. '20,21,22'). "
              "Default: all blocks.")
+    parser.add_argument(
+        "--inject_sigma",
+        type=str,
+        default=None,
+        help="Sigma window 'lo,hi' in which reference K/V injection is active "
+             "(e.g. '0.9,1.0' = only the earliest, weather-committing steps). "
+             "Default: every step.")
     parser.add_argument(
         "--capture_blocks",
         type=str,
@@ -242,6 +257,39 @@ def _parse_args():
         type=str,
         default=None,
         help="Directory to write captures.pt into. Created if it doesn't exist.")
+    parser.add_argument(
+        "--steer_vectors",
+        type=str,
+        default=None,
+        help="T5.4: weather directions from build_steer_vectors.py. When set, "
+             "alpha * direction is added to the post-block residual of "
+             "--steer_blocks while sigma is inside --steer_sigma.")
+    parser.add_argument(
+        "--steer_alpha",
+        type=float,
+        default=1.0,
+        help="Steering strength; 1.0 = the average measured weather difference.")
+    parser.add_argument(
+        "--steer_blocks",
+        type=str,
+        default="19,20,21,22",
+        help="Comma-separated blocks to steer.")
+    parser.add_argument(
+        "--steer_sigma",
+        type=str,
+        default="0.83,0.95",
+        help="Sigma window 'lo,hi' in which steering is active.")
+    parser.add_argument(
+        "--steer_passes",
+        type=str,
+        default="both",
+        choices=['both', 'cond'],
+        help="Steer both CFG branches, or only the conditional one.")
+    parser.add_argument(
+        "--steer_norm_preserve",
+        action="store_true",
+        default=False,
+        help="Rescale each steered token back to its original norm.")
     parser.add_argument(
         "--sample_solver",
         type=str,
@@ -484,6 +532,22 @@ def generate(args):
             convert_model_dtype=args.convert_model_dtype,
         )
 
+        steerer = None
+        if args.steer_vectors:
+            from wan.utils.steering import WeatherSteerer
+            steerer = WeatherSteerer.from_file(
+                args.steer_vectors,
+                alpha=args.steer_alpha,
+                blocks=[int(b) for b in args.steer_blocks.split(',')],
+                sigma_window=[float(s) for s in args.steer_sigma.split(',')],
+                norm_preserve=args.steer_norm_preserve,
+                passes=args.steer_passes,
+            ).attach(wan_ti2v.model)
+            logging.info(f"Weather steering: alpha={steerer.alpha} "
+                         f"blocks={steerer.blocks} "
+                         f"sigma=[{steerer.lo}, {steerer.hi}] "
+                         f"passes={steerer.passes}")
+
         logging.info(f"Generating video ...")
         video = wan_ti2v.generate(
             args.prompt,
@@ -502,13 +566,24 @@ def generate(args):
             inject_blocks=(
                 [int(i) for i in args.inject_blocks.split(',')]
                 if args.inject_blocks else None),
+            inject_sigma=(
+                tuple(float(v) for v in args.inject_sigma.split(','))
+                if args.inject_sigma else None),
             capture_blocks=(
                 [int(i) for i in args.capture_blocks.split(',')]
                 if args.capture_blocks else None),
             capture_timesteps=(
                 [int(i) for i in args.capture_timesteps.split(',')]
                 if args.capture_timesteps else None),
-            capture_dir=args.capture_dir)
+            capture_dir=args.capture_dir,
+            ref_inversion=args.ref_inversion)
+        if steerer is not None:
+            # 0 means the window never matched the schedule: the run is an
+            # unsteered baseline in disguise, so say so loudly.
+            logging.info(f"Weather steering applied {steerer.n_applied} times.")
+            if steerer.n_applied == 0:
+                logging.warning("Steering was configured but never fired.")
+            steerer.detach()
     elif "animate" in args.task:
         logging.info("Creating Wan-Animate pipeline.")
         wan_animate = wan.WanAnimate(
