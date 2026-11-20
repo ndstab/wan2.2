@@ -15,7 +15,17 @@
 \usepackage{enumitem}
 \usepackage[section]{placeins}  % keep floats inside their section
 \setlist{itemsep=2pt,topsep=4pt}
-\captionsetup{font=small,labelfont=bf}
+\captionsetup{font=small,labelfont=bf,skip=4pt}
+\setlength{\textfloatsep}{10pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{8pt plus 2pt minus 2pt}
+\renewcommand{\floatpagefraction}{0.8}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\textfraction}{0.1}
+\usepackage{etoolbox}
+\usepackage{needspace}
+\usepackage{float}
+\apptocmd{\thebibliography}{\setlength{\itemsep}{0.5pt}\small}{}{}
 
 \newcommand{\lam}{\lambda}
 \newcommand{\xhat}{\hat{x}_0}
@@ -42,8 +52,6 @@ Inside the network the weather type can be decoded from the residual stream with
 We report two negative results---diffusion inversion of the reference and mean-vector activation steering both fail to improve transfer, for reasons we diagnose---and one positive consequence: restricting reference injection to the analysis-derived early window carries most of the weather effect, while injecting only in the late steps does almost nothing. On 12 paired ground-truth pairs, early-gated injection beats all-step and late-only injection on every pair, and beats doing nothing on 9 of 12; in text-to-video, however, the effect barely depends on which weather reference is used.
 \end{abstract}
 
-\tableofcontents
-\newpage
 
 %=====================================================================
 \section{Introduction}
@@ -63,14 +71,9 @@ Any mechanism that copies appearance from it risks copying its buildings and roa
 Separating ``weather'' from ``content'' inside a model that was never trained to separate them is the central problem, and it turns into a scientific question about the model itself: \emph{where} (which layers) and \emph{when} (which denoising steps) does Wan2.2 represent weather, and is that representation separable from scene content?
 
 \paragraph{What we did.}
-The work proceeded in phases, each driven by a question:
-\begin{enumerate}
-  \item \textbf{A working method.} We inject the reference into the model's self-attention by blending keys and values (Sec.~\ref{sec:kv}), sweep the blend strength, and find an operating point that applies weather while keeping the scene (Sec.~\ref{sec:exp-lambda}).
-  \item \textbf{A first look inside.} We capture the model's internal state at every block and step, and ablate which blocks receive the injection (Sec.~\ref{sec:exp-atlas}).
-  \item \textbf{Diffusion inversion.} Following the supervisor's direction, we implement PreciseInv~\cite{preciseinv} on our flow-matching model and test whether an inverted reference transfers weather better (Sec.~\ref{sec:exp-inv}).
-  \item \textbf{Paired-data reverse analysis.} Using WeatherWeaver's simulation renders, in which the \emph{same} camera path is rendered clear and under known weather, we measure where and when the model separates weather from content (Sec.~\ref{sec:exp-paired}), including an exact ODE inversion of both members of each pair (Sec.~\ref{sec:exp-ode}).
-  \item \textbf{Using the analysis.} We test two training-free ways to exploit it: activation steering along the measured weather direction, and reference injection gated to the measured weather window (Sec.~\ref{sec:exp-steer}--\ref{sec:exp-gated}).
-\end{enumerate}
+We first build a working method: inject the reference into the model's self-attention by blending keys and values (Sec.~\ref{sec:kv}) and find an operating point (Sec.~\ref{sec:exp-lambda}--\ref{sec:exp-atlas}).
+Following the supervisor's direction we then test diffusion inversion of the reference (Sec.~\ref{sec:exp-inv}), and use WeatherWeaver's pixel-aligned clear/weather renders to measure where and when the model separates weather from content, including an exact ODE inversion of both members of each pair (Sec.~\ref{sec:exp-paired}--\ref{sec:exp-ode}).
+Finally we test two training-free ways to exploit the analysis: steering along the measured weather direction, and injection gated to the measured weather window (Sec.~\ref{sec:exp-steer}--\ref{sec:exp-gated}).
 
 \paragraph{Contributions.}
 \begin{itemize}
@@ -85,7 +88,7 @@ The work proceeded in phases, each driven by a question:
 %=====================================================================
 
 \paragraph{Weather synthesis for driving.}
-Weather generation for perception data is an active area, but almost all of it is \emph{trained}.
+Weather generation for perception data is active, but almost all of it is \emph{trained}.
 WeatherWeaver~\cite{weatherweaver} fine-tunes Stable Video Diffusion on a mix of simulated and generated pairs to add or remove weather controlled by a six-dimensional weather vector; it also released the paired data we use.
 AutoAWG~\cite{autoawg} fine-tunes CogVideoX with structural controls; Cyclone~\cite{cyclone} learns cycle-consistent weather editing from unpaired driving video; RealWeather~\cite{realweather} trains and RL-tunes a video model, noting that strictly paired real clear/adverse footage is nearly impossible to collect; WeatherEdit~\cite{weatheredit} uses 4D Gaussian fields.
 AutoWeather4D~\cite{autoweather4d} is feed-forward but requires the user to set physical parameters explicitly.
@@ -93,8 +96,7 @@ We are, to our knowledge, the first to study reference-guided weather transfer o
 
 \paragraph{Training-free style transfer by attention injection.}
 StyleID~\cite{styleid} injects a style image's self-attention keys and values into the denoising of a content image, after DDIM-inverting both; Plug-and-Play~\cite{pnp} and Prompt-to-Prompt~\cite{p2p} manipulate attention features for editing.
-StyleCrafter~\cite{stylecrafter} and PickStyle~\cite{pickstyle} bring style conditioning to video but train adapters.
-Scheduled Style Injection~\cite{scheduledstyle} varies injection strength across timesteps on images.
+StyleCrafter~\cite{stylecrafter} and PickStyle~\cite{pickstyle} bring style to video but train adapters; Scheduled Style Injection~\cite{scheduledstyle} varies injection strength across timesteps on images.
 Our injection follows the StyleID pattern but replaces inversion with forward re-noising of the reference, which we show is better for our model (Sec.~\ref{sec:exp-inv}).
 
 \paragraph{Where style lives in a diffusion model.}
@@ -103,7 +105,6 @@ These locations follow from U-Net architecture and do not transfer to DiTs, whic
 We found no prior work localising weather or style in a \emph{video} DiT.
 
 \paragraph{Diffusion inversion.}
-Inversion recovers the noise that generates a given sample.
 DDIM inversion~\cite{ddim} is approximate; EDICT~\cite{edict} and BELM~\cite{belm} redesign the sampler to be exactly invertible; ReNoise~\cite{renoise} and EasyInv~\cite{easyinv} refine the inverted point by iteration; Null-text inversion~\cite{nulltext} optimises the conditioning instead.
 PreciseInv~\cite{preciseinv}, the paper assigned by our supervisor, treats the noise as a parameter and solves a sequence of one-step reconstruction problems by gradient descent, with a rectified-flow variant that matches our model.
 
@@ -139,10 +140,8 @@ The denoiser is a diffusion transformer (DiT)~\cite{dit} of \textbf{30 identical
 Each block applies self-attention over all video tokens (with 3D rotary positions), cross-attention to the T5 text embedding, and an MLP, each modulated by the timestep (adaLN).
 There is no resolution hierarchy: every block sees the same token grid.
 
-\subsection{Diffusion inversion}
-Inversion runs the sampler backwards: given $x_0$, find the $x_1$ that the sampler maps to it.
-Because each Euler step evaluates the velocity at its \emph{start} point, the exact backward step $x_{i+1} = x_i + \Delta\sigma\,v_\theta(x_{i+1},\sigma_{i+1})$ is implicit in $x_{i+1}$; naive inversion uses $v_\theta(x_i,\sigma_i)$ instead and accumulates error.
-The methods in Sec.~2 differ in how they resolve this implicitness.
+\paragraph{Inversion} runs the sampler backwards: given $x_0$, find the $x_1$ that the sampler maps to it.
+The exact backward Euler step $x_{i+1} = x_i + \Delta\sigma\,v_\theta(x_{i+1},\sigma_{i+1})$ is implicit in $x_{i+1}$; naive inversion uses $v_\theta(x_i,\sigma_i)$ instead and accumulates error. The methods of Sec.~2 differ in how they resolve this.
 
 \subsection{Data: WeatherWeaver}
 WeatherWeaver~\cite{weatherweaver} released two kinds of paired data (Fig.~\ref{fig:data}):
@@ -198,8 +197,7 @@ K = (1-\lam)\,K_{\mathrm{content}} + \lam\,K_{\mathrm{ref}},\qquad
 V = (1-\lam)\,V_{\mathrm{content}} + \lam\,V_{\mathrm{ref}} .
 \end{equation}
 Injection is applied to both CFG branches (Fig.~\ref{fig:method}).
-The design rests on one observation: the self-attention projections were trained on exactly this representation---noised video tokens after patch embedding and adaLN---so the reference arrives in-distribution.
-An earlier design that concatenated reference features into \emph{cross}-attention (whose projections were trained on T5 text embeddings) failed for that reason.
+The self-attention projections were trained on exactly this representation (noised video tokens after patch embedding and adaLN), so the reference arrives in-distribution; an earlier design that fed reference features into \emph{cross}-attention, whose projections expect T5 text embeddings, failed for that reason.
 
 \subsection{Paired-difference probing}
 \label{sec:probe}
@@ -214,15 +212,11 @@ We probe 11 noise levels on the 50-step schedule (step indices 0, 5, \dots, 45, 
 
 \subsection{Exact fixed-point Euler inversion}
 \label{sec:fp}
-Forward noising (Sec.~\ref{sec:probe}) is a proxy for the trajectory the model actually follows.
-To probe the real trajectory, we invert both members of a pair along the 50-step schedule.
-Plain Euler inversion uses the velocity at the start of each step.
-We instead solve the implicit backward step by fixed-point iteration,
+Forward noising (Sec.~\ref{sec:probe}) is only a proxy for the trajectory the model actually follows. To probe the real trajectory we invert both members of a pair along the 50-step schedule, solving the implicit backward step by fixed-point iteration,
 \begin{equation}
 x_{i+1}^{(k+1)} = x_i + \Delta\sigma_i\, v_\theta\!\big(x_{i+1}^{(k)},\,\sigma_{i+1}\big),\qquad x_{i+1}^{(0)} = x_i + \Delta\sigma_i\, v_\theta(x_i,\sigma_i),
 \end{equation}
-which at convergence is the exact inverse of the Euler sampler (ReNoise~\cite{renoise} uses the same principle).
-Three iterations suffice. No gradients are involved.
+which at convergence is the exact inverse of the Euler sampler (the principle of ReNoise~\cite{renoise}). Three iterations suffice; no gradients are involved.
 
 \subsection{Mean-vector weather steering}
 From the paired probes we average the token-mean difference $\Delta h_b(\sigma)$ over many pairs to obtain a weather direction $d_b(\sigma)$ per block and noise level.
@@ -230,8 +224,7 @@ Steering adds $\alpha\, d_b(\sigma)$ to the residual stream of selected blocks w
 
 \subsection{Window-gated injection}
 \label{sec:gate}
-The analysis (Sec.~\ref{sec:exp-paired}--\ref{sec:exp-ode}) says the weather is decided early.
-This motivates gating the reference injection to a noise window, applying it only while $\sigma_t \in [\sigma_{lo}, \sigma_{hi}]$ (Fig.~\ref{fig:method}).
+Because the analysis (Sec.~\ref{sec:exp-paired}--\ref{sec:exp-ode}) says the weather is decided early, we gate the reference injection to a noise window, applying it only while $\sigma_t \in [\sigma_{lo}, \sigma_{hi}]$ (Fig.~\ref{fig:method}).
 The reference noise is still drawn at every step, so the full window $[0,1]$ is identical to ungated injection.
 
 %=====================================================================
@@ -239,12 +232,10 @@ The reference noise is still drawn at every step, so the full window $[0,1]$ is 
 %=====================================================================
 
 \paragraph{Setup.}
-All generations use Wan2.2-TI2V-5B at $1280{\times}704$, 61 frames, 50 UniPC steps with shift 5, CFG 5, seed 42, on a single A100 80\,GB (IIT Bombay Param Rudra) or A40/L40S (IIT Bombay Prajna).
-Analysis runs use empty text conditioning.
-No model weight is modified in any experiment.
+All generations use $1280{\times}704$, 61 frames, 50 UniPC steps with shift 5, CFG 5 and seed 42, on one A100 80\,GB (IIT Bombay Param Rudra) or A40/L40S (IIT Bombay Prajna). Analysis runs use empty text conditioning. No model weight is modified.
 
 \paragraph{A note on metrics.}
-Measuring weather in a generated video is itself unsolved, and we found three plausible metrics to be broken \emph{before} trusting them:
+Three plausible metrics turned out to be broken:
 CLIP image similarity cannot detect the weather (it scores an unweathered output 0.617 and a clearly weathered one 0.616 against the reference);
 the dark-channel haze prior~\cite{darkchannel} is confounded by sky and must be computed on the lower half of the frame;
 and LPIPS against an un-injected baseline measures scene \emph{recomposition} rather than content loss, because injection changes the trajectory from the first step.
@@ -256,16 +247,30 @@ We therefore use (a) composition-free proxies (sky-excluded dark channel for haz
 
 \begin{figure}[!htb]
   \centering
-  \includegraphics[width=0.55\linewidth]{figs/fig_lambda_sweep.jpg}
-  \caption{\textbf{Injection strength sweep} (``car on city street'', sandstorm reference, all 30 blocks; frames 0/30/60). Degradation is progressive: $\lam{=}0.05$ keeps the scene with mild weather, $\lam{=}0.10$ applies the sandstorm while the car, road, trees and lane markings stay legible, and $\lam{\ge}0.25$ replaces the scene with the reference's own appearance.}
+  \begin{subfigure}[b]{0.58\linewidth}\centering
+    \includegraphics[width=\linewidth]{figs/fig_lambda_sweep.jpg}
+    \caption{Injection strength sweep, frames 0/30/60.}
+    \label{fig:lambdasweep}
+  \end{subfigure}\hfill
+  \begin{minipage}[b]{0.38\linewidth}\centering
+    \begin{subfigure}[b]{0.82\linewidth}\centering
+      \includegraphics[width=\linewidth]{figs/fig_prompt_generality.jpg}
+      \caption{Four prompts at $\lam{=}0.10$, no retuning.}
+      \label{fig:prompts}
+    \end{subfigure}\\[4pt]
+    \begin{subfigure}[b]{0.82\linewidth}\centering
+      \includegraphics[width=\linewidth]{figs/fig_block_subsets.jpg}
+      \caption{Block subsets (up to 11 blocks) vs.\ all 30.}
+      \label{fig:subsets}
+    \end{subfigure}
+  \end{minipage}
+  \caption{\textbf{Operating point of reference injection} (sandstorm reference). (a)~``Car on city street'', all 30 blocks: degradation is progressive; $\lam{=}0.05$ keeps the scene with mild weather, $\lam{=}0.10$ applies the sandstorm while the car, road, trees and lane markings stay legible, and $\lam{\ge}0.25$ replaces the scene with the reference's own appearance. (b)~The $\lam{=}0.10$ setting holds across prompts. (c)~No subset of up to 11 blocks produces depth-structured weather; only all 30 blocks do (Sec.~\ref{sec:exp-atlas}).}
   \label{fig:lambda}
 \end{figure}
 
-Figure~\ref{fig:lambda} shows a seven-point sweep of $\lam$.
-The earlier observation that injection ``destroys content'' (made at $\lam{=}0.5$) turns out to be an operating-point error: at $\lam{=}0.5$ the output becomes a featureless dust field because the reference's keys and values carry its \emph{scene} as well as its weather (content substitution).
-At $\lam{=}0.10$ the sandstorm is clearly applied while the prompted scene survives, and this setting held across four different prompts without retuning (Fig.~\ref{fig:prompts} in the appendix).
-An orange band at the bottom edge scales with $\lam$ and is essentially absent at $\lam\le 0.10$, so it is a symptom of over-injection, not an independent bug.
-Injection overhead is about 1\% of generation time.
+A seven-point sweep of $\lam$ (Fig.~\ref{fig:lambda}) shows that the earlier observation that injection ``destroys content'' (made at $\lam{=}0.5$) was an operating-point error: at $\lam{=}0.5$ the output becomes a featureless dust field because the reference's keys and values carry its \emph{scene} as well as its weather (content substitution).
+At $\lam{=}0.10$ the sandstorm is clearly applied while the prompted scene survives, and this setting held across four different prompts without retuning (Fig.~\ref{fig:prompts}).
+An orange band at the bottom edge scales with $\lam$ and is absent at $\lam\le 0.10$, a symptom of over-injection. Injection costs about 1\% of generation time.
 
 %---------------------------------------------------------------------
 \subsection{Latent atlas and block ablation}
@@ -281,18 +286,16 @@ Injection overhead is about 1\% of generation time.
 We captured the residual stream at 7 blocks $\times$ 14 steps for an injected and a baseline run (98 cells each).
 At step 0 the perturbation peaks at \textbf{blocks 15--20} (Fig.~\ref{fig:atlas}).
 Ratio metrics initially suggested the last block ``absorbs'' the injection, but block 29 doubles the residual norm; in absolute terms it keeps about 66\% of the peak perturbation (absolute difference 3882 at block 20 versus 2556 at block 29).
-We then injected into block subsets only (from the last block alone up to the last 11 blocks), at matched and at higher $\lam$: \textbf{no subset of up to 11 blocks produced depth-structured weather}---only tint and blur---while all 30 blocks did (Fig.~\ref{fig:subsets} in the appendix).
+We then injected into block subsets only (from the last block alone up to the last 11 blocks), at matched and at higher $\lam$: \textbf{no subset of up to 11 blocks produced depth-structured weather}---only tint and blur---while all 30 blocks did (Fig.~\ref{fig:subsets}).
 Weather in this model is therefore not a property of a few late ``style'' blocks.
 
 %---------------------------------------------------------------------
 \subsection{Does inverting the reference help?}
 \label{sec:exp-inv}
 
-StyleID~\cite{styleid} spends 66\% of its runtime DDIM-inverting the style image and harvests keys and values along the inversion trajectory.
-We replaced forward re-noising with the PreciseInv~\cite{preciseinv} solution.
-Its rectified-flow formulation matches Wan2.2 exactly ($x_0 = x_\sigma - \sigma v$), so the feared incompatibility of flow matching with inversion was not an obstacle.
+StyleID~\cite{styleid} spends 66\% of its runtime DDIM-inverting the style image and harvests keys and values along that trajectory. We replaced forward re-noising with the PreciseInv~\cite{preciseinv} solution, whose rectified-flow formulation matches Wan2.2 exactly ($x_0 = x_\sigma - \sigma v$).
 We solved all 50 subproblems on our own schedule (0.59\,h on an A100, mean 8.8 iterations per step; warm-starting each subproblem from the previous solution cut iterations about $10\times$ relative to the paper's random initialisation), and the inversion reconstructs the reference 3.85$\times$ better than a random draw.
-Activation checkpointing was mandatory: naive backpropagation through the 5B model ran out of memory at 77\,GB, versus 19\,GB with per-block checkpointing.
+Per-block activation checkpointing was mandatory (19\,GB versus out-of-memory at 77\,GB).
 
 \begin{figure}[!htb]
   \centering
@@ -334,7 +337,7 @@ Figure~\ref{fig:phase} plots the phase measure $\rho(\sigma)$.
 In \textbf{every world}, the model's clean-image guess contains more of the weather difference than of a scene difference at high noise: at $\sigma{=}0.95$ it has committed 0.42 of the weather difference versus 0.19 of the scene difference in the city world (0.38/0.30, 0.35/0.22 and 0.47/0.26 in the other three).
 In the town and bush-road worlds the two curves meet by $\sigma\approx0.85$--$0.88$; in the city and rural worlds the weather stays ahead until $\sigma\approx0.6$. The window in which weather leads in \emph{every} world is therefore $\sigma\approx0.92$--$0.98$, about steps 5--15 of 50.
 The image pairs reproduce the weather curve (0.21/0.33/0.42 at $\sigma$ 0.98/0.95/0.92).
-This is consistent with diffusion's known coarse-to-fine order---weather here is mostly low-frequency light and haze---so we present it as a measured property of weather in this model rather than a new mechanism.
+This fits diffusion's coarse-to-fine order (weather here is mostly low-frequency light and haze), so we present it as a measured property, not a new mechanism.
 
 \begin{figure}[!htb]
   \centering
@@ -344,13 +347,13 @@ This is consistent with diffusion's known coarse-to-fine order---weather here is
 \end{figure}
 
 \paragraph{Where: a generic magnitude peak, a specific type signal.}
-The raw size of the weather difference is amplified most at \textbf{block 22} (up to $7.4\times$ the input difference at $\sigma{=}0.95$; Fig.~\ref{fig:where}, appendix), but the content control shows the same block-22 peak ($5$--$6\times$), so that peak is a property of the network, not of weather.
+The raw size of the weather difference is amplified most at \textbf{block 22} (up to $7.4\times$ the input difference at $\sigma{=}0.95$), but the content control shows the same block-22 peak ($5$--$6\times$), so that peak is a property of the network, not of weather.
 What \emph{is} weather-specific is the signal that distinguishes weather families: the same-family minus cross-family cosine peaks at \textbf{blocks 19--22 for $\sigma$ 0.83--0.92} (up to $+0.31$), inside the phase window and consistent with the mid-depth peak of Sec.~\ref{sec:exp-atlas}.
 
 \paragraph{Disentanglement: is there a content-independent weather direction?}
 Within one world, the token-mean weather difference points the same way across different camera paths (cosine 0.5--0.8 for $\sigma\le0.95$), while scene differences do not ($-0.1$ to $-0.2$; random 3072-d vectors: $0\pm0.018$).
 \textbf{Across worlds the shared direction is real but much weaker} (Fig.~\ref{fig:crossenv}): 0.05--0.40 at blocks 19--22 against a control of $\approx0.01$, highest at low noise (0.58 at block 22, $\sigma{=}0.09$) and nearly absent at blocks 19--22 inside the high-noise window, where early blocks (1--11) carry more (0.15--0.25).
-We report this correction explicitly: our single-world result overstated how general the weather direction is.
+Our single-world result therefore overstated how general the direction is.
 
 \begin{figure}[!htb]
   \centering
@@ -363,7 +366,6 @@ We report this correction explicitly: our single-world result overstated how gen
 On the single-factor image pairs, a leave-one-out nearest-centroid classifier on the token-mean difference identifies the weather type with up to \textbf{91.7\% accuracy} (chance 16.7\%), best at blocks 3--10 over most noise levels (Fig.~\ref{fig:types}).
 After block 0 the accuracy is already 60--77\%, so much of the type information is present in the input, and the early blocks sharpen it by 15--20 points.
 Snow and snowflake are similar to the model (cosine 0.62); cloud and rain are the least self-consistent, matching how faint those edits are in the data.
-The classifier fits only class means, so this is a training-free probe.
 
 \begin{figure}[!htb]
   \centering
@@ -376,8 +378,7 @@ The classifier fits only class means, so this is a training-free probe.
 \subsection{Exact inversion: when is the weather locked in?}
 \label{sec:exp-ode}
 
-The supervisor asked whether \emph{inversion} reveals a phase in which style and content separate.
-We inverted both members of clear/weather pairs with plain Euler (8 pairs) and with the fixed-point inversion of Sec.~\ref{sec:fp} (4 pairs).
+To test whether \emph{inversion} reveals a phase in which style and content separate, we inverted both members of clear/weather pairs with plain Euler (8 pairs) and with the fixed-point inversion of Sec.~\ref{sec:fp} (4 pairs).
 \textbf{Reconstruction improves from 0.43/0.58 to 0.042/0.102 relative error} (clear/weather) with three fixed-point iterations, so the inverted trajectories are faithful.
 
 \begin{figure}[!htb]
@@ -402,8 +403,7 @@ Together with Sec.~\ref{sec:exp-paired}: \emph{yes}, there is a phase---the weat
 We built weather directions from 36--40 scene-0 pairs (leave-one-path-out stability: cosine 0.98--1.00) and added them to blocks 19--22 inside the weather window.
 
 \paragraph{Paired ground-truth evaluation.}
-For a clear video we know what its weather version should look like, so we evaluate against it.
-A first protocol (re-noise the clear video to $\sigma{=}0.95$ and denoise) was invalid: even the unsteered arm became a featureless blur.
+For a clear video we know what its weather version should look like. A first protocol (re-noise the clear video to $\sigma{=}0.95$ and denoise) was invalid: even the unsteered arm became a featureless blur.
 We therefore invert the clear video exactly (Sec.~\ref{sec:fp}), which reconstructs it at 3.7--4.2\% error, and regenerate it with and without steering.
 We report the fraction of the true weather difference realised along its direction (frac), the cosine between the change and the true difference (cos), and the distance to the real weather render relative to the unsteered regeneration (err; $<1$ means closer than doing nothing).
 
@@ -436,13 +436,13 @@ weather-matched dir., $\alpha{=}0.5$ & 0.37 & 0.32 & 1.25 & 14.8 & 1/4 \\
 Steering always moves the video \emph{along} the true weather difference (frac 0.30--1.08), but always lands further from the real render than doing nothing.
 In text-to-video it preserves the composition exactly---a real advantage---but adds a bright bluish veil and streaks rather than the darkening of real bad weather.
 Diagnosis: a token-mean direction adds the same vector at every position, whereas weather is spatially structured (sky versus road, near versus far); a cosine of 0.2--0.4 with the true difference means most of the push is off-axis.
-Attention-based injection is spatially adaptive by construction, which motivates returning to it.
+Attention-based injection is spatially adaptive by construction.
 
 %---------------------------------------------------------------------
 \subsection{Using the analysis (2): window-gated injection}
 \label{sec:exp-gated}
 
-If the weather is decided in the first steps, injecting the reference only there should carry most of the effect, and injecting only later should carry little.
+If the weather is decided in the first steps, injecting only there should carry most of the effect.
 
 \begin{figure}[!htb]
   \centering
@@ -468,18 +468,16 @@ Two further patterns:
 (a) \emph{the window matters more than the amount}---the late-only window injects on 32 steps against the early window's 18 but is worse on every pair;
 (b) \emph{the direction is right in every arm} (cosine 0.30--0.39 with the true difference), so arms differ by magnitude and scene damage rather than direction.
 Path 0000 is the most favourable (4/4 pairs, mean err 0.90); on paths 0001 and 0002 the best arm is at or above 1 on three of four pairs each. Reference mismatch does not explain this on its own: one failing pair has a reference that is weaker than its target (rain 2/fog 5 against rain 3/fog 7), but another fails with an almost identical weather vector (cloud 3 against cloud 2, same fog and snowflakes).
-The first pair reproduced a run made a month earlier on a different cluster to within 0.01 in err.
 
 \begin{figure}[!htb]
   \centering
-  \includegraphics[width=\linewidth]{figs/fig_showcase.jpg}
+  \includegraphics[width=0.8\linewidth]{figs/fig_showcase.jpg}
   \caption{\textbf{Text-to-video with four first-person Unreal references} (dashcam prompt, seed 42, $\lam{=}0.1$, frame 40). The four references are visibly different, but the generations are not: outputs for different references are much closer to each other (PSNR 21--24\,dB) than to the un-injected output (14\,dB early-only, 10--11\,dB all-step). What transfers is a shared darkening (mean brightness 123 $\rightarrow$ $\approx$101 early-only, $\approx$69 all-step) and a change of layout, not rain, snow or fog.}
   \label{fig:showcase}
 \end{figure}
 
 \paragraph{A limit made visible.}
-Figure~\ref{fig:showcase} runs the same comparison in text-to-video, where no inverted scene pins the content.
-The early window again carries a large part of the effect at less cost to the image, but the effect is \textbf{almost independent of which reference is used}: rain, snow, fog and storm references give near-identical outputs, darker than the baseline with the same blue sky.
+In text-to-video (Fig.~\ref{fig:showcase}), the early window again carries much of the effect at less cost to the image, but the effect is \textbf{almost independent of which reference is used}: rain, snow, fog and storm references give near-identical outputs, darker than the baseline with the same blue sky.
 This is consistent with the analysis---the cross-world weather direction is dominated by a generic ``bad weather'' component, and type-specific information is weaker---and it means that at content-preserving strengths reference injection transfers the \emph{shared} part of adverse weather (darkening, overcast light) far more than the part that distinguishes one weather from another.
 
 %=====================================================================
@@ -498,6 +496,7 @@ Two intuitive improvements---inverting the reference and steering along a mean w
 (iv) The ground-truth evaluation of gated injection covers 12 pairs from three camera paths in one world, and its gain over doing nothing is modest (9/12 pairs). (v) In text-to-video the injected effect is largely the same for rain, snow, fog and storm references.
 (vi) There is still no reliable automatic metric for weather in generated video without paired ground truth.
 
+\needspace{5\baselineskip}
 \paragraph{Future work.}
 \begin{itemize}
   \item \textbf{Spatially adaptive steering}: replace the single mean vector by per-token directions (e.g.\ predicted from content tokens), which our diagnosis suggests is what steering lacks.
@@ -506,41 +505,10 @@ Two intuitive improvements---inverting the reference and steering along a mean w
   \item \textbf{Weather estimation}: use the decodable type and intensity signal to estimate weather parameters from a reference clip and inject them, rather than raw appearance.
 \end{itemize}
 
+\paragraph{Code.}
+{\sloppy All code is on branch \texttt{latent\_inspection}: \texttt{generate.py} (\texttt{--ref\_video}, \texttt{--lambda\_ref}, \texttt{--inject\_blocks}, \texttt{--inject\_sigma}, \texttt{--steer\_*}), \texttt{paired\_atlas.py}, \texttt{paired\_inversion.py}, \texttt{paired\_eval\_inv.py}, \texttt{paired\_eval\_kv.py}, \texttt{wan/utils/steering.py}, the analysis scripts and \texttt{make\_report\_figs.py}. No model weights are modified or distributed.\par}
+
 \bibliographystyle{plain}
 \bibliography{refs}
-
-\appendix
-\section{Additional figures}
-
-\begin{figure}[!htb]
-  \centering
-  \includegraphics[width=0.48\linewidth]{figs/fig_prompt_generality.jpg}
-  \caption{\textbf{Prompt generality}: $\lam{=}0.10$, all blocks, four prompts, no retuning.}
-  \label{fig:prompts}
-\end{figure}
-
-\begin{figure}[!htb]
-  \centering
-  \includegraphics[width=0.48\linewidth]{figs/fig_block_subsets.jpg}
-  \caption{\textbf{Block-subset injection.} No subset of up to 11 blocks produces depth-structured weather; only all 30 blocks do.}
-  \label{fig:subsets}
-\end{figure}
-
-\begin{figure}[!htb]
-  \centering
-  \includegraphics[width=\linewidth]{figs/fig_where.png}
-  \caption{\textbf{Size of the weather difference per block and noise level} (scene 0). Left: relative to the clear activation; right: amplification relative to block 0. The block-22 peak also appears for scene differences.}
-  \label{fig:where}
-\end{figure}
-
-\begin{figure}[!htb]
-  \centering
-  \includegraphics[width=0.62\linewidth]{figs/fig_inv_pareto.png}
-  \caption{\textbf{Haze versus detail}, inverted versus random reference noise across $\lam$: every inverted point lies on or inside the random frontier.}
-\end{figure}
-
-\section{Reproducibility}
-{\sloppy Code is in the project repository (branch \texttt{latent\_inspection}): \texttt{generate.py} (\texttt{--ref\_video}, \texttt{--lambda\_ref}, \texttt{--inject\_blocks}, \texttt{--inject\_sigma}, \texttt{--steer\_*}), \texttt{paired\_atlas.py} (paired probing, simulation and image modes), \texttt{paired\_inversion.py} (fixed-point inversion), \texttt{paired\_eval\_inv.py} and \texttt{paired\_eval\_kv.py} (paired ground-truth evaluation), \texttt{wan/utils/steering.py}, the analysis scripts (\texttt{analyze\_*.py}, \texttt{cross\_env.py}) and \texttt{make\_report\_figs.py}.
-No model weights are modified or distributed.\par}
 
 \end{document}
