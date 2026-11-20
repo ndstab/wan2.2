@@ -43,12 +43,12 @@ Department of Civil Engineering, IIT Bombay}
 
 \begin{abstract}
 Perception systems for autonomous vehicles must work in fog, rain and snow, but footage of such conditions is scarce and expensive to collect.
-We study whether a large pretrained video generator, Wan2.2-TI2V-5B, can be made to synthesise adverse weather \emph{without any training}, by showing it a short reference clip of the desired weather while a text prompt describes the scene.
+We study whether a large pretrained video generator, Wan2.2-TI2V-5B, can be made to synthesise adverse weather \emph{without training or changing any weights}, by showing it a short reference clip of the desired weather while a text prompt describes the scene.
 Our method blends the reference video's self-attention keys and values into the generation (reference K/V injection).
-We find a usable operating point ($\lam{=}0.10$, all 30 blocks) at which scene content survives while weather is applied, and that the long-reported ``content collapse'' was an operating-point error.
+We find an operating point ($\lam{=}0.10$, all 30 blocks) at which a sandstorm reference's appearance is applied while scene content survives, and that the long-reported ``content collapse'' was an operating-point error.
 We then ask \emph{why} it works by analysing the model with paired data: 167 pixel-aligned clear/weather video pairs from four simulated worlds (WeatherWeaver) and 60 single-factor image pairs.
-Three independent probes agree on one finding: \textbf{Wan2.2 commits to the weather roughly twice as early in the denoising trajectory as it commits to scene content}, inside a high-noise window $\sigma \approx 0.92$--$0.98$, and an exact ODE inversion shows the weather is locked into the initial noise by $\sigma \approx 0.9$.
-Inside the network the weather type can be decoded from the residual stream with 92\% accuracy (chance 17\%).
+Our probes agree on one finding: \textbf{Wan2.2 commits to the weather earlier in the denoising trajectory than to scene content}. In every world the weather difference leads inside a high-noise window $\sigma \approx 0.92$--$0.98$; in the city world the scene difference needs about twice as many denoising steps to reach the same level. A fixed-point ODE inversion shows the direction of the weather difference stops changing by $\sigma \approx 0.9$.
+On 60 image pairs, the weather type can be decoded from paired residual-stream differences with up to 92\% leave-one-out accuracy at the best block and noise level (chance 17\%).
 We report two negative results---diffusion inversion of the reference and mean-vector activation steering both fail to improve transfer, for reasons we diagnose---and one positive consequence: restricting reference injection to the analysis-derived early window carries most of the weather effect, while injecting only in the late steps does almost nothing. On 12 paired ground-truth pairs, early-gated injection beats all-step and late-only injection on every pair, and beats doing nothing on 9 of 12; in text-to-video, however, the effect barely depends on which weather reference is used.
 \end{abstract}
 
@@ -63,7 +63,7 @@ Recent text-to-video diffusion models can render realistic scenes from a prompt,
 
 This report studies that question on \textbf{Wan2.2-TI2V-5B}~\cite{wan2025}, an open 5-billion-parameter video diffusion transformer.
 The input is a text prompt (the scene, e.g.\ ``car on city street'') and a short \emph{reference video} of the target weather; the output should follow the prompt's scene while taking on the reference's atmosphere.
-We impose a hard constraint set by the project supervisor: \textbf{no training} of any kind---no fine-tuning, no adapters, no weight updates.
+We impose a hard constraint set by the project supervisor: \textbf{no training} of any kind---no fine-tuning, no adapters, no weight updates. One experiment (Sec.~\ref{sec:exp-inv}) does run gradient descent, but on the reference's noise tensor only, with all model weights frozen (test-time optimisation); whether this fits the constraint has not been settled with the supervisor, and it is not part of the final method.
 
 \paragraph{Why this is hard.}
 A reference video carries both its weather \emph{and} its own scene.
@@ -72,14 +72,14 @@ Separating ``weather'' from ``content'' inside a model that was never trained to
 
 \paragraph{What we did.}
 We first build a working method: inject the reference into the model's self-attention by blending keys and values (Sec.~\ref{sec:kv}) and find an operating point (Sec.~\ref{sec:exp-lambda}--\ref{sec:exp-atlas}).
-Following the supervisor's direction we then test diffusion inversion of the reference (Sec.~\ref{sec:exp-inv}), and use WeatherWeaver's pixel-aligned clear/weather renders to measure where and when the model separates weather from content, including an exact ODE inversion of both members of each pair (Sec.~\ref{sec:exp-paired}--\ref{sec:exp-ode}).
+Following the supervisor's direction we then test diffusion inversion of the reference (Sec.~\ref{sec:exp-inv}), and use WeatherWeaver's pixel-aligned clear/weather renders to measure where and when the model separates weather from content, including a fixed-point ODE inversion of both members of each pair (Sec.~\ref{sec:exp-paired}--\ref{sec:exp-ode}).
 Finally we test two training-free ways to exploit the analysis: steering along the measured weather direction, and injection gated to the measured weather window (Sec.~\ref{sec:exp-steer}--\ref{sec:exp-gated}).
 
 \paragraph{Contributions.}
 \begin{itemize}
   \item A training-free reference-guided weather pipeline for Wan2.2 and its operating point ($\lam{=}0.10$, all blocks), shown to hold across prompts.
-  \item A \textbf{paired-data analysis} of a video diffusion transformer: weather is committed $\sim\!2\times$ earlier than scene content (all four worlds and the image set); exact inversion locates the lock-in at $\sigma{\approx}0.9$; weather type is linearly decodable (92\%).
-  \item An \textbf{exact fixed-point Euler inversion} for Wan2.2 that reconstructs videos to 4--10\% relative error, versus 43--58\% for plain Euler inversion.
+  \item A \textbf{paired-data analysis} of a video diffusion transformer: weather differences emerge earlier in denoising than scene differences (all four worlds; about twice as many steps for the scene in the city world); fixed-point inversion shows the weather direction settles by $\sigma{\approx}0.9$; weather type is decodable from paired activation differences (up to 92\%).
+  \item A \textbf{fixed-point Euler inversion} for Wan2.2 that reconstructs videos to 4--10\% relative error, versus 43--58\% for plain Euler inversion.
   \item Two diagnosed negative results (reference inversion; mean-vector steering) and a positive, analysis-derived refinement: \textbf{window-gated injection}.
 \end{itemize}
 
@@ -153,8 +153,8 @@ No real captured footage is included in the release.
 
 \begin{figure}[!htb]
   \centering
-  \includegraphics[width=\linewidth]{figs/fig_dataset_sim.jpg}\\[2pt]
-  \includegraphics[width=0.62\linewidth]{figs/fig_dataset_images.jpg}
+  \includegraphics[width=0.78\linewidth]{figs/fig_dataset_sim.jpg}\\[2pt]
+  \includegraphics[width=0.5\linewidth]{figs/fig_dataset_images.jpg}
   \caption{\textbf{WeatherWeaver paired data.} Top: one simulation camera path rendered clear and under three known weather vectors (pixel-aligned). Bottom: SDXL image pairs, clean versus one weather type at increasing strength.}
   \label{fig:data}
 \end{figure}
@@ -203,20 +203,20 @@ The self-attention projections were trained on exactly this representation (nois
 \label{sec:probe}
 To ask where and when the model represents weather, we take a pixel-aligned pair (clear $x^c_0$, weather $x^w_0$), noise both with the \emph{same} $\epsilon$ to level $\sigma$, run one forward pass on each with identical (empty) conditioning, and record every block's residual output $h^c_b, h^w_b$.
 Because noise, geometry, camera, frame and conditioning are identical, the difference $\Delta h_b(\sigma) = h^w_b - h^c_b$ is attributable to weather alone, and a single forward pass has no trajectory drift.
-We measure: (i) the size $\|\Delta h_b\|/\|h^c_b\|$ per block and $\sigma$; (ii) whether the token-averaged difference points the same way across different scenes (cosine between pairs); (iii) the \textbf{phase}: how much of the true latent difference $x^w_0 - x^c_0$ already appears in the model's clean-image guess (Eq.~\ref{eq:x0}),
+We measure: (i) the size $\|\Delta h_b\|/\|h^c_b\|$ per block and $\sigma$; (ii) whether the token-averaged difference points the same way across different scenes (cosine between pairs); (iii) the \textbf{phase}: how large the difference between the model's clean-image guesses (Eq.~\ref{eq:x0}) already is, relative to the true latent difference $x^w_0 - x^c_0$,
 \begin{equation}
 \rho(\sigma) = \frac{\|\xhat(x^w_\sigma) - \xhat(x^c_\sigma)\|}{\|x^w_0 - x^c_0\|}.
 \end{equation}
-The same measurement on pairs of two \emph{different clear scenes} gives a content control.
+Because $\rho$ is a ratio of norms, we also report the cosine between the predicted and the true difference, which checks that the predicted difference points the right way. The same measurements on pairs of two \emph{different clear scenes} give a content control.
 We probe 11 noise levels on the 50-step schedule (step indices 0, 5, \dots, 45, 49) and all 30 blocks.
 
-\subsection{Exact fixed-point Euler inversion}
+\subsection{Fixed-point Euler inversion}
 \label{sec:fp}
 Forward noising (Sec.~\ref{sec:probe}) is only a proxy for the trajectory the model actually follows. To probe the real trajectory we invert both members of a pair along the 50-step schedule, solving the implicit backward step by fixed-point iteration,
 \begin{equation}
 x_{i+1}^{(k+1)} = x_i + \Delta\sigma_i\, v_\theta\!\big(x_{i+1}^{(k)},\,\sigma_{i+1}\big),\qquad x_{i+1}^{(0)} = x_i + \Delta\sigma_i\, v_\theta(x_i,\sigma_i),
 \end{equation}
-which at convergence is the exact inverse of the Euler sampler (the principle of ReNoise~\cite{renoise}). Three iterations suffice; no gradients are involved.
+which at convergence is the exact inverse of the Euler sampler (the principle of ReNoise~\cite{renoise}). We use three iterations, which leaves a 4--10\% reconstruction error, so the inversion is approximate; it inverts an Euler sampler, not the UniPC sampler used for text-to-video. No gradients are involved.
 
 \subsection{Mean-vector weather steering}
 From the paired probes we average the token-mean difference $\Delta h_b(\sigma)$ over many pairs to obtain a weather direction $d_b(\sigma)$ per block and noise level.
@@ -232,7 +232,7 @@ The reference noise is still drawn at every step, so the full window $[0,1]$ is 
 %=====================================================================
 
 \paragraph{Setup.}
-All generations use $1280{\times}704$, 61 frames, 50 UniPC steps with shift 5, CFG 5 and seed 42, on one A100 80\,GB (IIT Bombay Param Rudra) or A40/L40S (IIT Bombay Prajna). Analysis runs use empty text conditioning. No model weight is modified.
+All videos are $1280{\times}704$, 61 frames, on one A100 80\,GB (IIT Bombay Param Rudra) or A40/L40S (IIT Bombay Prajna). No model weight is modified. We use two protocols. \emph{Text-to-video} generations (Sec.~\ref{sec:exp-lambda}--\ref{sec:exp-inv} and the text-to-video parts of Sec.~\ref{sec:exp-steer}--\ref{sec:exp-gated}) use the standard sampler: 50 UniPC steps with shift 5, CFG 5 and seed 42. The \emph{paired} analyses and evaluations (Sec.~\ref{sec:exp-paired} onward) use empty text conditioning and no CFG; the paired evaluations invert and regenerate with 50 Euler steps on the same shift-5 schedule, drawing the reference noise for K/V injection from seed 7.
 
 \paragraph{A note on metrics.}
 Three plausible metrics turned out to be broken:
@@ -294,7 +294,7 @@ Weather in this model is therefore not a property of a few late ``style'' blocks
 \label{sec:exp-inv}
 
 StyleID~\cite{styleid} spends 66\% of its runtime DDIM-inverting the style image and harvests keys and values along that trajectory. We replaced forward re-noising with the PreciseInv~\cite{preciseinv} solution, whose rectified-flow formulation matches Wan2.2 exactly ($x_0 = x_\sigma - \sigma v$).
-We solved all 50 subproblems on our own schedule (0.59\,h on an A100, mean 8.8 iterations per step; warm-starting each subproblem from the previous solution cut iterations about $10\times$ relative to the paper's random initialisation), and the inversion reconstructs the reference 3.85$\times$ better than a random draw.
+PreciseInv optimises the noise tensor by gradient descent (Adam, backpropagating through the frozen model; no weight is updated), so this experiment is test-time optimisation rather than a purely feed-forward method. We solved all 50 subproblems on our own schedule (0.59\,h on an A100, mean 8.8 iterations per step; warm-starting each subproblem from the previous solution cut iterations about $10\times$ relative to the paper's random initialisation), and the inversion reconstructs the reference 3.85$\times$ better than a random draw.
 Per-block activation checkpointing was mandatory (19\,GB versus out-of-memory at 77\,GB).
 
 \begin{figure}[!htb]
@@ -317,11 +317,11 @@ detail, random re-noising & 0.040 & 0.025 & 0.016 & 0.015 & \multirow{2}{*}{0.00
 detail, inverted reference & 0.066 & 0.040 & 0.048 & 0.019 & \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{Inversion makes transfer strictly worse.} Haze = dark-channel prior on the sky-free lower half; detail = Laplacian energy. Random re-noising at $\lam{=}0.05$ already gives as much haze as the inverted reference at $\lam{=}0.25$, with 2.2$\times$ the detail.}
+\caption{\textbf{Inversion weakens weather transfer.} Haze = dark-channel prior on the sky-free lower half; detail = Laplacian energy. Random re-noising at $\lam{=}0.05$ already gives as much haze as the inverted reference at $\lam{=}0.25$, with 2.2$\times$ the detail.}
 \label{tab:inv}
 \end{table}
 
-\textbf{Result: negative.} At every $\lam$, random re-noising dominates (Table~\ref{tab:inv}, Fig.~\ref{fig:invladder}); every inverted point lies on or inside the random-noise Pareto frontier.
+\textbf{Result: negative.} At every matched $\lam$, random re-noising gives more haze (Table~\ref{tab:inv}, Fig.~\ref{fig:invladder}). The inverted reference keeps more detail, but mostly because it applies little weather: at $\lam\le0.10$ its sky stays clear and blue. It is a different, weaker haze/detail trade-off rather than a better one: random re-noising at $\lam{=}0.05$ matches the haze of the inverted reference at $\lam{=}0.25$ with about twice the detail.
 Diagnosis: the 50 solved noises are essentially \emph{one direction} (consecutive cosine 1.000; first-to-last 0.84, versus 0.0006 for independent Gaussians), whereas the random path draws 50 independent noises whose noise components average out.
 Our interpretation is that forward re-noising is the training-time noising formula and therefore in-distribution at every $\sigma$, while an approximate inversion trajectory is on neither the data nor the training manifold.
 One confound remains: the inversion was solved without CFG and deployed with CFG~5.
@@ -335,8 +335,9 @@ We ran the paired probe (Sec.~\ref{sec:probe}) on \textbf{167 clear/weather pair
 \paragraph{When: weather is committed before content.}
 Figure~\ref{fig:phase} plots the phase measure $\rho(\sigma)$.
 In \textbf{every world}, the model's clean-image guess contains more of the weather difference than of a scene difference at high noise: at $\sigma{=}0.95$ it has committed 0.42 of the weather difference versus 0.19 of the scene difference in the city world (0.38/0.30, 0.35/0.22 and 0.47/0.26 in the other three).
-In the town and bush-road worlds the two curves meet by $\sigma\approx0.85$--$0.88$; in the city and rural worlds the weather stays ahead until $\sigma\approx0.6$. The window in which weather leads in \emph{every} world is therefore $\sigma\approx0.92$--$0.98$, about steps 5--15 of 50.
-The image pairs reproduce the weather curve (0.21/0.33/0.42 at $\sigma$ 0.98/0.95/0.92).
+In the town and bush-road worlds the two curves meet by $\sigma\approx0.85$--$0.88$; in the city and rural worlds the weather stays ahead until $\sigma\approx0.6$. The window in which weather leads in \emph{every} world is therefore $\sigma\approx0.92$--$0.98$, about steps 5--15 of 50. In the city world the scene difference reaches the level the weather difference has at step 10 ($\rho\approx0.41$) only at about step 22, i.e.\ it needs roughly twice as many steps.
+The lead is not an artefact of measuring norms: in the city world the predicted weather difference also points the right way sooner (cosine with the true difference 0.49 vs.\ 0.24 for the scene at $\sigma{=}0.95$, 0.59 vs.\ 0.32 at 0.92).
+The image pairs reproduce the weather curve (0.21/0.33/0.42 at $\sigma$ 0.98/0.95/0.92), but have no content control, so they do not test the comparison.
 This fits diffusion's coarse-to-fine order (weather here is mostly low-frequency light and haze), so we present it as a measured property, not a new mechanism.
 
 \begin{figure}[!htb]
@@ -348,7 +349,7 @@ This fits diffusion's coarse-to-fine order (weather here is mostly low-frequency
 
 \paragraph{Where: a generic magnitude peak, a specific type signal.}
 The raw size of the weather difference is amplified most at \textbf{block 22} (up to $7.4\times$ the input difference at $\sigma{=}0.95$), but the content control shows the same block-22 peak ($5$--$6\times$), so that peak is a property of the network, not of weather.
-What \emph{is} weather-specific is the signal that distinguishes weather families: the same-family minus cross-family cosine peaks at \textbf{blocks 19--22 for $\sigma$ 0.83--0.92} (up to $+0.31$), inside the phase window and consistent with the mid-depth peak of Sec.~\ref{sec:exp-atlas}.
+What \emph{is} weather-specific is the signal that distinguishes weather families: the same-family minus cross-family cosine peaks at \textbf{blocks 19--22 for $\sigma$ 0.83--0.92} (up to $+0.31$), just below the phase window and consistent with the mid-depth peak of Sec.~\ref{sec:exp-atlas}.
 
 \paragraph{Disentanglement: is there a content-independent weather direction?}
 Within one world, the token-mean weather difference points the same way across different camera paths (cosine 0.5--0.8 for $\sigma\le0.95$), while scene differences do not ($-0.1$ to $-0.2$; random 3072-d vectors: $0\pm0.018$).
@@ -363,7 +364,7 @@ Our single-world result therefore overstated how general the direction is.
 \end{figure}
 
 \paragraph{Weather type is decodable.}
-On the single-factor image pairs, a leave-one-out nearest-centroid classifier on the token-mean difference identifies the weather type with up to \textbf{91.7\% accuracy} (chance 16.7\%), best at blocks 3--10 over most noise levels (Fig.~\ref{fig:types}).
+On the single-factor image pairs, a leave-one-out nearest-centroid classifier on the token-mean difference identifies the weather type with up to \textbf{91.7\% accuracy} (chance 16.7\%), best at blocks 3--10 over most noise levels (Fig.~\ref{fig:types}). This is the peak over all blocks and noise levels on only 60 pairs, and it classifies paired clear-to-weather differences, not the weather in an arbitrary video.
 After block 0 the accuracy is already 60--77\%, so much of the type information is present in the input, and the early blocks sharpen it by 15--20 points.
 Snow and snowflake are similar to the model (cosine 0.62); cloud and rain are the least self-consistent, matching how faint those edits are in the data.
 
@@ -375,7 +376,7 @@ Snow and snowflake are similar to the model (cosine 0.62); cloud and rain are th
 \end{figure}
 
 %---------------------------------------------------------------------
-\subsection{Exact inversion: when is the weather locked in?}
+\subsection{Fixed-point inversion: when does the weather settle?}
 \label{sec:exp-ode}
 
 To test whether \emph{inversion} reveals a phase in which style and content separate, we inverted both members of clear/weather pairs with plain Euler (8 pairs) and with the fixed-point inversion of Sec.~\ref{sec:fp} (4 pairs).
@@ -384,17 +385,17 @@ To test whether \emph{inversion} reveals a phase in which style and content sepa
 \begin{figure}[!htb]
   \centering
   \includegraphics[width=\linewidth]{figs/fig_inversion.png}
-  \caption{\textbf{Exact inversion of clear/weather pairs.} Left: size of the latent weather difference along the inversion, relative to the clean difference. Middle: its direction relative to the clean difference---it rotates between $\sigma\approx0.2$ and $0.85$ and then stops changing: the weather is locked into the noise by $\sigma\approx0.9$. Right: the difference inside the DiT, largest at blocks $\sim$20--23 for $\sigma$ 0.68--0.88.}
+  \caption{\textbf{Fixed-point inversion of clear/weather pairs.} Left: size of the latent weather difference along the inversion, relative to the clean difference. Middle: its direction relative to the clean difference---it rotates between $\sigma\approx0.2$ and $0.85$ and then stops changing from $\sigma\approx0.9$. Right: the difference inside the DiT, largest at blocks $\sim$20--23 for $\sigma$ 0.68--0.88.}
   \label{fig:ode}
 \end{figure}
 
 Three findings (Fig.~\ref{fig:ode}):
 \begin{enumerate}
-  \item \textbf{The weather is never erased; it is transformed and then locked in.} The latent weather difference grows to $2.17\times$ its clean size at $\sigma{=}1$; its direction rotates away from the pixel-space difference (cosine 0.99 at $\sigma{=}0.1$, 0.74 at 0.4, 0.44 at 0.8) and then \textbf{plateaus at $\approx0.40$ from $\sigma\approx0.9$ to 1}.
+  \item \textbf{The weather is never erased; it is transformed and then settles.} The latent weather difference grows to $2.17\times$ its clean size at $\sigma{=}1$; its direction rotates away from the pixel-space difference (cosine 0.99 at $\sigma{=}0.1$, 0.74 at 0.4, 0.44 at 0.8) and then \textbf{plateaus at $\approx0.40$ from $\sigma\approx0.9$ to 1}.
   \item \textbf{The weather lives in the noise.} The clear and weather videos invert to noises with cosine $0.27\pm0.13$ (independent noises: $\approx0$), and regenerating from them restores the full weather difference (ratio 1.02).
   \item \textbf{Forward-noising probes are faithful except at the highest noise.} The weather direction along the true trajectory agrees with the forward-noising probe at cosine $\ge0.9$ for $\sigma\le0.68$, but only 0.27--0.49 for $\sigma\ge0.92$.
 \end{enumerate}
-Together with Sec.~\ref{sec:exp-paired}: \emph{yes}, there is a phase---the weather is decided in the first few steps (high noise), before the scene content.
+Together with Sec.~\ref{sec:exp-paired} this points to a phase in which the weather difference is set in the first, high-noise steps, before the scene difference. It is an interpretation, not a proof that later steps cannot change the weather, and finding~3 means it rests less on the forward-noising probes at the very highest noise than on the inversion itself.
 
 %---------------------------------------------------------------------
 \subsection{Using the analysis (1): mean-vector steering}
@@ -404,8 +405,8 @@ We built weather directions from 36--40 scene-0 pairs (leave-one-path-out stabil
 
 \paragraph{Paired ground-truth evaluation.}
 For a clear video we know what its weather version should look like. A first protocol (re-noise the clear video to $\sigma{=}0.95$ and denoise) was invalid: even the unsteered arm became a featureless blur.
-We therefore invert the clear video exactly (Sec.~\ref{sec:fp}), which reconstructs it at 3.7--4.2\% error, and regenerate it with and without steering.
-We report the fraction of the true weather difference realised along its direction (frac), the cosine between the change and the true difference (cos), and the distance to the real weather render relative to the unsteered regeneration (err; $<1$ means closer than doing nothing).
+We therefore invert the clear video with the fixed-point inversion (Sec.~\ref{sec:fp}), which reconstructs it at 3.7--4.2\% error, and regenerate it with and without steering.
+We report the fraction of the true weather difference realised along its direction (frac), the cosine between the change and the true difference (cos), and the distance to the real weather render divided by the clear-to-weather distance (err). The unsteered regeneration scores err${\approx}1.00$, so err${<}1$ means closer than doing nothing.
 
 \begin{table}[!htb]
 \centering\small
@@ -421,7 +422,7 @@ $\alpha{=}4$, $\sigma$ 0.83--0.95 & 0.37 & 0.21 & 1.92 & 5.8 & 0/10 \\
 weather-matched dir., $\alpha{=}0.5$ & 0.37 & 0.32 & 1.25 & 14.8 & 1/4 \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{Steering points the right way but lands further from the real weather.} Ten scene-0 pairs, exact-inversion baseline. Adding blocks 1--10 or all 30 blocks raised frac to 1.08 but err to 1.87--2.51.}
+\caption{\textbf{Steering points the right way but lands further from the real weather.} Ten scene-0 pairs, fixed-point-inversion baseline. Adding blocks 1--10 or all 30 blocks raised frac to 1.08 but err to 1.87--2.51.}
 \label{tab:steer}
 \end{table}
 
@@ -433,7 +434,7 @@ weather-matched dir., $\alpha{=}0.5$ & 0.37 & 0.32 & 1.25 & 14.8 & 1/4 \\
 \end{figure}
 
 \textbf{Result: negative} (Table~\ref{tab:steer}, Fig.~\ref{fig:steer}).
-Steering always moves the video \emph{along} the true weather difference (frac 0.30--1.08), but always lands further from the real render than doing nothing.
+Steering always moves the video \emph{along} the true weather difference (frac 0.30--1.08), but every arm lands further from the real render than doing nothing \emph{on average}; only one run in about sixty (with the weather-matched direction) got closer.
 In text-to-video it preserves the composition exactly---a real advantage---but adds a bright bluish veil and streaks rather than the darkening of real bad weather.
 Diagnosis: a token-mean direction adds the same vector at every position, whereas weather is spatially structured (sky versus road, near versus far); a cosine of 0.2--0.4 with the true difference means most of the push is off-axis.
 Attention-based injection is spatially adaptive by construction.
@@ -467,7 +468,7 @@ All-step injection, the method's original form, is worse than doing nothing on a
 Two further patterns:
 (a) \emph{the window matters more than the amount}---the late-only window injects on 32 steps against the early window's 18 but is worse on every pair;
 (b) \emph{the direction is right in every arm} (cosine 0.30--0.39 with the true difference), so arms differ by magnitude and scene damage rather than direction.
-Path 0000 is the most favourable (4/4 pairs, mean err 0.90); on paths 0001 and 0002 the best arm is at or above 1 on three of four pairs each. Reference mismatch does not explain this on its own: one failing pair has a reference that is weaker than its target (rain 2/fog 5 against rain 3/fog 7), but another fails with an almost identical weather vector (cloud 3 against cloud 2, same fog and snowflakes).
+Path 0000 is the most favourable (4/4 pairs, mean err 0.90); on paths 0001 and 0002 the best arm has err${\ge}1$ on two of four pairs each (4/4, 2/4 and 2/4 pairs below 1, i.e.\ the 8/12 above). Reference mismatch does not explain this on its own: one failing pair has a reference that is weaker than its target (rain 2/fog 5 against rain 3/fog 7), but another fails with an almost identical weather vector (cloud 3 against cloud 2, same fog and snowflakes).
 
 \begin{figure}[!htb]
   \centering
@@ -485,8 +486,8 @@ This is consistent with the analysis---the cross-world weather direction is domi
 %=====================================================================
 
 We set out to make a frozen video model render weather from an example, and ended up mapping when and where the model decides the weather.
-The answers are consistent across three probes, four simulated worlds and an image set: \textbf{Wan2.2 commits to the weather in the first, highest-noise steps, before it commits to the scene}; an exact inversion shows the weather locked into the noise by $\sigma\approx0.9$; and the weather type is linearly readable in the residual stream.
-Practically, reference K/V injection at $\lam{=}0.10$ is a working training-free method, and gating it to the early window beats all-step injection on every evaluated pair; its gain over no injection is modest, though, and in text-to-video it transfers the shared darkening of bad weather more than any specific weather.
+The answers are consistent across our probes and four simulated worlds: \textbf{in Wan2.2 the weather difference emerges in the first, highest-noise steps, before the scene difference}; a fixed-point inversion shows its direction settling by $\sigma\approx0.9$; and the weather type is decodable from paired activation differences.
+Practically, reference K/V injection at $\lam{=}0.10$ transfers a sandstorm reference's appearance while keeping the scene, and gating it to the early window beats all-step injection on every evaluated pair; its gain over no injection is modest, though, and in text-to-video it transfers the shared darkening of bad weather more than any specific weather.
 Two intuitive improvements---inverting the reference and steering along a mean weather direction---did not help, and we explained why.
 
 \paragraph{Limitations.}

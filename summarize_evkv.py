@@ -67,7 +67,7 @@ def main(d):
     print(f'\\caption{{\\textbf{{Paired ground-truth evaluation of reference injection}} '
           f'({n} held-out scene-0 pairs, means). frac: fraction of the true weather difference '
           f'realised along its direction; cos: cosine of the change with the true difference; '
-          f'err: distance to the real weather render relative to the un-injected regeneration '
+          f'err: distance to the real weather render divided by the clear-to-weather distance (the un-injected regeneration scores 1.00) '
           f'(${{<}}1$ = closer); W$>$base: pairs where pixel PSNR to the weather render beats no injection; W / C: PSNR (dB) to the real weather render / to the clear video. '
           f'References are weather renders of a \\emph{{different}} camera path with the nearest '
           f'weather vector.}}')
