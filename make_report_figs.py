@@ -73,7 +73,7 @@ def fig_phase_worlds():
                 label='scene difference (control)')
     style(axes[4], 'SDXL image pairs (weather only)')
     axes[4].plot(x, IMAGES, color=BLUE, lw=2, marker='o', ms=3.5)
-    axes[0].set_ylabel('fraction of the difference\ncommitted in $\\hat{x}_0$')
+    axes[0].set_ylabel('predicted-to-true difference\nnorm ratio $\\rho$')
     axes[0].annotate('weather', (2, WORLDS['City (scene 0)'][0][2]), (2.6, 0.62),
                      fontsize=8, color=INK)
     axes[0].annotate('scene', (2, WORLDS['City (scene 0)'][1][2]), (3.2, 0.12),
